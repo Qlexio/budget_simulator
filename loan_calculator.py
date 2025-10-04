@@ -1,32 +1,75 @@
 import numpy as np
 import pandas as pd
 from decimal import Decimal as _Decimal
-
-from ._utils import quantize_amount
+from typing import Optional, Union, List, Any
+from ._utils import quantize_amount, to_decimal
 
 
 class LoanCalculator():
+    """_summary_
+    """
+    def __init__(self, loan_amount, annual_interest_rate, annual_insurance_rate: Union[int, float, list[Union[int, float]]],
+                 monthly_repayment=0, insured_number: int = 1, insurance_coverage: Union[float, int, list[Union[int, float]]] = 1):
+        """_summary_
 
-    def __init__(self, loan_amount, annual_interest_rate, annual_insurance_rate,
-                 monthly_repayment=0, insured_number=1, insurance_coverage=1):
-        self.loan_amount = loan_amount
-        self.annual_interest_rate = annual_interest_rate
+        Args:
+            loan_amount (_type_): _description_
+            annual_interest_rate (_type_): _description_
+            annual_insurance_rate (_type_): _description_
+            monthly_repayment (int, optional): _description_. Defaults to 0.
+            insured_number (int, optional): _description_. Defaults to 1.
+            insurance_coverage (Union[float, int, list], optional): _description_. Defaults to 1.
+        """
+        # TODO Docstring
+        self.loan_amount = to_decimal(loan_amount)
+        self.annual_interest_rate = to_decimal(annual_interest_rate, precision="0.00001")
 
-        self.annual_insurance_rate = self._format_insurance_related_values(annual_insurance_rate)
-        self.insured_number = self._format_insurance_related_values(insured_number)
+        self.insured_number = insured_number  # TODO To quantize?
+        # Insurance Rate, e.g. x%
+        self.annual_insurance_rate = self._format_insurance_related_values(annual_insurance_rate, precision="0.00001")
+        # Insurance coverage, e.g. 50% or 100% of the total insurance coverage from 0% to 100%
         self.insurance_coverage = self._format_insurance_related_values(insurance_coverage)
 
-        self.monthly_repayment = monthly_repayment
+        self.monthly_repayment = to_decimal(monthly_repayment)
         self.loan_amortization_table = None
 
-    def _format_insurance_related_values(self, insurance_value):
+    def _format_insurance_related_values(self, insurance_value: Union[int, float, list[Union[int, float]]], 
+                                         insured_number: Optional[int] = None, precision: str = "0.01") -> list[Union[int, float]]:
         """Format values related to insurance."""
-        return insurance_value if isinstance(insurance_value, list) else [insurance_value]
+        if not insured_number:
+            insured_number = self.insured_number
+        if insured_number == 1 and not isinstance(insurance_value, list):
+            return [to_decimal(insurance_value, precision=precision)]
+        if isinstance(insurance_value, list) and insured_number == 1:
+            return [to_decimal(insurance_value[0], precision=precision)]
+        elif insured_number > 1 and not isinstance(insurance_value, list):
+            ret_insurance_value = []
+            for i in range(self.insured_number):
+                ret_insurance_value.append(to_decimal(insurance_value, precision=precision))
+            return ret_insurance_value
+        elif insured_number > 1 and isinstance(insurance_value, list):
+            ret_insurance_value = []
+            for _, ins_value in zip(range(insured_number), insurance_value):
+                ret_insurance_value.append(to_decimal(ins_value, precision=precision))
+            return ret_insurance_value
+        else:
+            return []
 
-    def validate_refunded_capital(self, monthly_repayment, insurance_N1, remaining_capital, annual_interest_rate, tolerance=0.1):
-        """"""
+    def validate_refunded_capital(self, monthly_repayment, insurance_N1, remaining_capital, annual_interest_rate, capital_tolerance=0.1):
+        """_summary_
+
+        Args:
+            monthly_repayment (_type_): _description_
+            insurance_N1 (_type_): _description_
+            remaining_capital (_type_): _description_
+            annual_interest_rate (_type_): _description_
+            capital_tolerance (float, optional): _description_. Defaults to 0.1.
+
+        Returns:
+            _type_: _description_
+        """
         # TODO Docstring + translation
-        tolerance = _Decimal(tolerance).quantize(_Decimal("0.00001"))
+        tolerance = _Decimal(capital_tolerance).quantize(_Decimal("0.00001"))
 
         interest = remaining_capital * annual_interest_rate / 12
         current_refunded_capital = monthly_repayment - interest - insurance_N1
@@ -38,32 +81,68 @@ class LoanCalculator():
             current_remaining_capital = remaining_capital - current_refunded_capital
         return interest, current_refunded_capital, _Decimal(current_remaining_capital)
 
-    def calculated_monthly_insurance(self, assurance_solo, montant_pret_initial, taux_assurance_annuel):
-        """"""
-        # TODO Docstring + translation
-        if assurance_solo:
-            return montant_pret_initial * taux_assurance_annuel / 18
-        else:
-            return montant_pret_initial * taux_assurance_annuel / 12
+    def calculated_monthly_insurance(self, remaining_capital: Union[int, float], annual_insurance_rate: Optional[Union[int, float, list[Union[int, float]]]] = None,
+                                     insurance_coverage: Optional[Union[int, float, list[Union[int, float]]]] = None, insured_number: Optional[int] = None):
+        """_summary_
 
-    def calculate_loan_amortization_table(self, duration, initial_loan_amount, annual_interest_rate, annual_insurance_rate,
-                                          monthly_repayment, insured_number=1, tolerance=0.1):
+        Args:
+            remaining_capital (_type_): _description_
+            annual_insurance_rate (_type_, optional): _description_. Defaults to None.
+            insurance_coverage (_type_, optional): _description_. Defaults to None.
+            insured_number (_type_, optional): _description_. Defaults to None.
+
+        Returns:
+            _type_: _description_
+        """
+        # TODO Docstring + translation
+        monthly_insurance_cost = 0
+        
+        if not annual_insurance_rate:
+            formatted_annual_insurance_rate = self._format_insurance_related_values(self.annual_insurance_rate, insured_number=insured_number, precision="0.00001")
+        else:
+            formatted_annual_insurance_rate = self._format_insurance_related_values(annual_insurance_rate, insured_number=insured_number, precision="0.00001")
+        if not insurance_coverage:
+            formatted_insurance_coverage = self._format_insurance_related_values(self.insurance_coverage, insured_number=insured_number)
+        else:
+            formatted_insurance_coverage = self._format_insurance_related_values(insurance_coverage, insured_number=insured_number)
+        for annual_rate, coverage in zip(formatted_annual_insurance_rate, formatted_insurance_coverage):
+            monthly_insurance_cost += remaining_capital * ((annual_rate * coverage) / 12)
+        return monthly_insurance_cost
+
+    def calculate_loan_amortization_table(self, duration, initial_loan_amount, annual_interest_rate, monthly_repayment, capital_tolerance=0.1,
+                                          annual_insurance_rate=None, insured_number=1, insurance_coverage=None):
+        """_summary_
+
+        Args:
+            duration (_type_): _description_
+            initial_loan_amount (_type_): _description_
+            annual_interest_rate (_type_): _description_
+            monthly_repayment (_type_): _description_
+            capital_tolerance (float, optional): _description_. Defaults to 0.1.
+            annual_insurance_rate (_type_, optional): _description_. Defaults to None.
+            insured_number (int, optional): _description_. Defaults to 1.
+            insurance_coverage (_type_, optional): _description_. Defaults to None.
+
+        Returns:
+            _type_: _description_
+        """
+        # TODO Docstring
         loan_amortization_table = {"month": [1], "interest": None, "insurance": None, "refunded_capital": None, "remaining_capital": None, "cumulated_costs": None}
 
         loan_amortization_table["interest"] = [quantize_amount(initial_loan_amount * annual_interest_rate / 12)]
-        loan_amortization_table["insurance"] = [quantize_amount(self.calculated_monthly_insurance(assurance_solo=assurance_solo, montant_pret_initial=montant_pret_initial,
-                                                                                taux_assurance_annuel=taux_assurance_annuel))]
+        loan_amortization_table["insurance"] = [quantize_amount(self.calculated_monthly_insurance(remaining_capital=initial_loan_amount, annual_insurance_rate=annual_insurance_rate,
+                                                                                                  insurance_coverage=insurance_coverage, insured_number=insured_number))]
         loan_amortization_table["refunded_capital"] = [quantize_amount(monthly_repayment - loan_amortization_table["interest"][-1] - loan_amortization_table["insurance"][-1])]
         loan_amortization_table["remaining_capital"] = [quantize_amount(initial_loan_amount - loan_amortization_table["refunded_capital"][-1])]
         loan_amortization_table["cumulated_costs"] = [quantize_amount(loan_amortization_table["interest"][-1] + loan_amortization_table["insurance"][-1])]
 
         for i in range(1, duration):
             loan_amortization_table["month"].append(i + 1)
-            loan_amortization_table["insurance"].append(quantize_amount(self.calculated_monthly_insurance(assurance_solo=assurance_solo, montant_pret_initial=loan_amortization_table["capital_restant"][-1],
-                                                                                taux_assurance_annuel=taux_assurance_annuel)))
+            loan_amortization_table["insurance"].append(quantize_amount(self.calculated_monthly_insurance(remaining_capital=loan_amortization_table["remaining_capital"][-1],
+                                                                                annual_insurance_rate=annual_insurance_rate, insurance_coverage=insurance_coverage, insured_number=insured_number)))
             
             interest, current_refunded_capital, current_remaining_capital = self.validate_refunded_capital(monthly_repayment=monthly_repayment, insurance_N1=loan_amortization_table["insurance"][-1],
-                                    remaining_capital=loan_amortization_table["remaining_capital"][-1], annual_interest_rate=annual_interest_rate)  # , tolerance=tolerance)
+                                    remaining_capital=loan_amortization_table["remaining_capital"][-1], annual_interest_rate=annual_interest_rate, capital_tolerance=capital_tolerance)
             loan_amortization_table["interest"].append(quantize_amount(interest))
             loan_amortization_table["refunded_capital"].append(quantize_amount(current_refunded_capital))
             loan_amortization_table["remaining_capital"].append(quantize_amount(current_remaining_capital))
