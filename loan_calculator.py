@@ -113,7 +113,7 @@ class LoanCalculator():
     def calculate_loan_amortization_table(self, duration: int, initial_loan_amount: _Decimal, annual_interest_rate: _Decimal,
                                           monthly_repayment: _Decimal,
                                           early_repayment: Optional[Union[int, float]] = None, early_repayment_month: int = 0, 
-                                          capital_tolerance: Union[int, float] = 0.1) -> dict[str, Union[_Decimal, int]]:
+                                          capital_tolerance: Union[int, float] = 0.1) -> dict[str, list[Union[_Decimal, int]]]:
         """_summary_
 
         Args:
@@ -158,3 +158,79 @@ class LoanCalculator():
                 break
 
         return loan_amortization_table
+
+    def calculate_monthly_repayment_and_loan_amortization_table(self, duration: int, initial_loan_amount: _Decimal, annual_interest_rate: _Decimal,
+                                          monthly_repayment: _Decimal,
+                                          early_repayment: Optional[Union[int, float]] = None, early_repayment_month: int = 0, 
+                                          capital_tolerance: Union[int, float] = 0.1) -> tuple[dict[str, list[Union[_Decimal, int]]], _Decimal]:
+        
+        # TODO To a look in case of early repayment calculation as the monthly repayment should stay the same but duration change.
+
+        loan_amortization_table = self.calculate_loan_amortization_table(duration=duration, initial_loan_amount=initial_loan_amount,
+                                                                    annual_interest_rate=annual_interest_rate, monthly_repayment=monthly_repayment,
+                                                                    early_repayment=early_repayment, early_repayment_month=early_repayment_month,
+                                                                    capital_tolerance=capital_tolerance)
+
+        def calculate_new_monthly_repayment(monthly_repayment, current_remaining_capital, loan_amount, initial_capital_ratio=None):
+            capital_ratio = initial_capital_ratio or current_remaining_capital / loan_amount
+            capital_ratio = to_decimal(capital_ratio, precision="0.000001")
+            # print("IN Ratio:", ratio_capital)
+            # print("Nouvelle Mensualité:", (mensualite * (1 + (ratio_capital / 2))))  # .quantize(Decimal("0.00")))
+            return quantize_amount(monthly_repayment * (1 + (capital_ratio / 2))), capital_ratio
+
+        if all((loan_amortization_table["remaining_capital"][-1] == 0, loan_amortization_table["remaining_capital"][-2] != 0)):
+            return loan_amortization_table, monthly_repayment
+        
+        new_monthly_repayment = monthly_repayment
+        new_monthly_repayment_list = []
+        new_monthly_repayments_mean = 0
+        capital_ratio = None
+
+        while True:
+            new_monthly_repayment, capital_ratio = calculate_new_monthly_repayment(new_monthly_repayment, 
+                                                                                   loan_amortization_table["remaining_capital"][-1],
+                                                                                   initial_loan_amount, initial_capital_ratio=capital_ratio)
+            loan_amortization_table = self.calculate_loan_amortization_table(duration=duration, initial_loan_amount=initial_loan_amount,
+                                                                             annual_interest_rate=annual_interest_rate, monthly_repayment=new_monthly_repayment,
+                                                                             early_repayment=early_repayment, early_repayment_month=early_repayment_month,
+                                                                             capital_tolerance=capital_tolerance)
+
+            print("Repayment", new_monthly_repayment)
+            print("Capital ratio 1", capital_ratio)
+
+            if len(new_monthly_repayment_list) < 10:
+                new_monthly_repayment_list.append(new_monthly_repayment)
+            else:
+                new_monthly_repayment_list.pop(0)
+                new_monthly_repayment_list.append(new_monthly_repayment)
+                new_monthly_repayments_mean = sum(new_monthly_repayment_list) / len(new_monthly_repayment_list)
+
+            # Case 1: No early repayment => should end at duration
+            if all((loan_amortization_table["remaining_capital"][-1] == 0, loan_amortization_table["remaining_capital"][-2] != 0,
+                    early_repayment is None, loan_amortization_table["month"][-1] == duration)):
+                print("Return 1")
+                return loan_amortization_table, new_monthly_repayment
+            # Case 2: Early repayment => can end earlier
+            elif all((loan_amortization_table["remaining_capital"][-1] == 0, loan_amortization_table["remaining_capital"][-2] != 0,
+                    early_repayment is not None)):
+                print("Return 2")
+                return loan_amortization_table, new_monthly_repayment
+            # elif np.abs(new_monthly_repayments_mean - new_monthly_repayment) <= 1:
+            #     return loan_amortization_table, new_monthly_repayment
+            # Case 3: End to early and/or loop at repayment calculation => change capital ratio
+            elif all((loan_amortization_table["remaining_capital"][-1] == 0,  # loan_amortization_table["remaining_capital"][-2] == 0,
+                      capital_ratio == 0, early_repayment is None)):
+                capital_ratio = -np.random.random()
+            # Case 4: Other cases
+            else:
+                capital_ratio = None
+                # capital_ratio = -np.random.random()
+            
+            print("Capital ratio 2", capital_ratio)
+            
+            # if all((loan_amortization_table["remaining_capital"][-1] == 0, loan_amortization_table["remaining_capital"][-2] != 0)):
+            #     return loan_amortization_table, new_monthly_repayment
+            # elif all((loan_amortization_table["remaining_capital"][-1] == 0, loan_amortization_table["remaining_capital"][-2] == 0, capital_ratio == 0)):
+            #     capital_ratio = -np.random.random()
+            # else:
+            #     capital_ratio = None
