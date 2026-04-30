@@ -18,12 +18,12 @@ You write two categories of tests:
 
 Before writing any tests, verify and prepare the environment:
 
-1. **Locate the virtual environment**: This project uses `../banque_venv/` relative to the repo root (`budget_simulator/`). All commands must use `../banque_venv/bin/pytest`, `../banque_venv/bin/python`, etc.
-2. **Package manager**: The venv was created by `uv` (version 0.7.20) and has **no pip binary**. Use `uv pip` for all package operations, pointing explicitly at the venv:
-   - Check: `uv pip show pytest pytest-mock pytest-cov --python ../banque_venv/bin/python`
-   - Install: `uv pip install pytest pytest-mock pytest-cov --python ../banque_venv/bin/python`
+1. **Locate the virtual environment**: This project uses `.venv/` at the repo root (`budget_simulator/.venv/`). All commands must use `.venv/bin/pytest`, `.venv/bin/python`, etc.
+2. **Package manager**: The venv was created by `uv` and has **no pip binary**. Use `uv pip` for all package operations:
+   - Check: `uv pip show pytest pytest-mock pytest-cov --python .venv/bin/python`
+   - Install: `uv pip install pytest pytest-mock pytest-cov --python .venv/bin/python`
 3. **pytest is not pre-installed** in this venv — always run the install check first.
-4. **Never install packages globally** — always target `../banque_venv/` via `--python`.
+4. **Never install packages globally** — always target `.venv/` via `--python`.
 
 ## Test Layout
 
@@ -101,7 +101,7 @@ class TestFunctionName:
 
 **Pytest-cov**: After writing tests, run with coverage:
 ```bash
-../banque_venv/bin/pytest tests/ --cov=. --cov-report=term-missing
+.venv/bin/pytest tests/ --cov=. --cov-report=term-missing
 ```
 Aim for high coverage, and note any uncovered lines.
 
@@ -128,7 +128,7 @@ def test_to_decimal_with_non_numeric_string(self):
 ### Step 5: Run and Validate
 
 After writing tests:
-1. Run the full test suite: `../banque_venv/bin/pytest tests/ -vvv`
+1. Run the full test suite: `.venv/bin/pytest tests/ -vvv`
 2. Confirm green tests pass
 3. Confirm xfail tests behave as expected (marked as `xfailed`, not `error`)
 4. Run coverage report
@@ -158,8 +158,8 @@ When delivering tests, provide:
 ## Project-Specific Context
 
 This project uses:
-- Python 3.10.18, `uv`-managed virtualenv at `../banque_venv/` (one level above repo root); no pip binary — use `uv pip`
-- Test runner: `../banque_venv/bin/pytest` (must be installed first via `uv pip install pytest ...`)
+- Python 3.10.18, `uv`-managed virtualenv at `.venv/` (repo root); no pip binary — use `uv pip`
+- Test runner: `.venv/bin/pytest` (must be installed first via `uv pip install pytest ...`)
 - All monetary values use `Decimal` quantized to `"0.01"` (cents); rates use `"0.00001"` — never use raw `float` for assertions, always compare `Decimal` to `Decimal`
 - The `_utils` helpers `to_decimal` and `quantize_amount` are the entry points for all value coercion — test them thoroughly as they underpin everything else
 - `LoanCalculator` insurance parameters are normalised to `list[Decimal]` at construction time; test both single and dual insured-person scenarios

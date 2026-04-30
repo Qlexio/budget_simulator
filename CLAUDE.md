@@ -8,17 +8,20 @@ A Python project for French mortgage/home-loan analysis: computing amortization 
 
 ## Environment & Commands
 
-The virtual environment lives one level above the repo root (`../banque_venv/`).
+The virtual environment is `uv`-managed and lives at `.venv/` inside the repo root.
 
 ```bash
-# Activate the virtual environment (run from the repo root)
-source ../banque_venv/bin/activate
+# Activate the virtual environment
+source .venv/bin/activate
 
 # Launch JupyterLab
 jupyter lab
+
+# Add a new package
+uv pip install <package>
 ```
 
-Dependencies: `numpy`, `pandas`, `decimal` (stdlib), `jupyter`/`jupyterlab`. All packages are already present in `../banque_venv/` — no install step needed.
+Dependencies: `numpy`, `pandas`, `decimal` (stdlib), `jupyter`/`jupyterlab`. All packages are already present in `.venv/` — no install step needed. Use `uv pip` for any package management (no pip binary in this venv).
 
 ## Architecture
 
