@@ -15,3 +15,6 @@ dev = [
     "pytest-mock",
     "pytest-cov",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
