@@ -208,3 +208,6 @@ __marimo__/
 
 # Research / R&D notebooks and files (local only, never committed)
 research/
+
+# Claude Code agent runtime state
+.claude/agent-memory/
