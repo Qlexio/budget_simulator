@@ -8,7 +8,7 @@ A Python project for French mortgage/home-loan analysis: computing amortization 
 
 ## Environment & Commands
 
-The virtual environment is `uv`-managed and lives at `.venv/` inside the repo root.
+Python 3.10.18. The virtual environment is `uv`-managed and lives at `.venv/` inside the repo root. There is **no `pip` binary** — use `uv pip` for all package management.
 
 ```bash
 # Activate the virtual environment
@@ -21,7 +21,30 @@ jupyter lab
 uv pip install <package>
 ```
 
-Dependencies: `numpy`, `pandas`, `decimal` (stdlib), `jupyter`/`jupyterlab`. All packages are already present in `.venv/` — no install step needed. Use `uv pip` for any package management (no pip binary in this venv).
+### Testing
+
+A custom `pytest-test-writer` agent lives at `.claude/agents/pytest-test-writer.md`. **Always invoke it after creating or modifying any code.** It is the only agent permitted to create or edit files under `tests/`. It handles environment setup, test layout, and coverage reporting automatically.
+
+`pytest` is not pre-installed. Install it once:
+
+```bash
+uv pip install pytest pytest-mock pytest-cov --python .venv/bin/python
+```
+
+Tests live in `tests/` (mirroring the package structure). Run them:
+
+```bash
+# Full suite
+.venv/bin/pytest tests/ -vvv
+
+# Single file
+.venv/bin/pytest tests/test_loan_calculator.py -vvv
+
+# With coverage
+.venv/bin/pytest tests/ --cov=. --cov-report=term-missing
+```
+
+Dependencies: `numpy`, `pandas`, `decimal` (stdlib), `jupyter`/`jupyterlab`. All packages are already present in `.venv/` — no install step needed.
 
 ## Architecture
 
