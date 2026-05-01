@@ -25,9 +25,11 @@ uv pip install <package>
 
 A custom `pytest-test-writer` agent lives at `.claude/agents/pytest-test-writer.md`. **Always invoke it after creating or modifying any code.** It is the only agent permitted to create or edit files under `tests/`. It handles environment setup, test layout, and coverage reporting automatically.
 
-`pytest` is not pre-installed. Install it once:
+Dev dependencies (`pytest`, `pytest-mock`, `pytest-cov`) are declared in `pyproject.toml` under `[dependency-groups] dev`. Install them with:
 
 ```bash
+uv sync --group dev
+# or, as a fallback:
 uv pip install pytest pytest-mock pytest-cov --python .venv/bin/python
 ```
 
@@ -44,7 +46,7 @@ Tests live in `tests/` (mirroring the package structure). Run them:
 .venv/bin/pytest tests/ --cov=. --cov-report=term-missing
 ```
 
-Dependencies: `numpy`, `pandas`, `decimal` (stdlib), `jupyter`/`jupyterlab`. All packages are already present in `.venv/` — no install step needed.
+Production dependencies (`numpy`, `pandas`) and dev dependencies (`pytest`, `pytest-mock`, `pytest-cov`) are declared in `pyproject.toml`. `jupyter`/`jupyterlab` is installed in the venv but not declared. `decimal` is stdlib.
 
 ## Architecture
 

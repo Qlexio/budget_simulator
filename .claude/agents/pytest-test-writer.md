@@ -19,10 +19,11 @@ You write two categories of tests:
 Before writing any tests, verify and prepare the environment:
 
 1. **Locate the virtual environment**: This project uses `.venv/` at the repo root (`budget_simulator/.venv/`). All commands must use `.venv/bin/pytest`, `.venv/bin/python`, etc.
-2. **Package manager**: The venv was created by `uv` and has **no pip binary**. Use `uv pip` for all package operations:
-   - Check: `uv pip show pytest pytest-mock pytest-cov --python .venv/bin/python`
-   - Install: `uv pip install pytest pytest-mock pytest-cov --python .venv/bin/python`
-3. **pytest is not pre-installed** in this venv — always run the install check first.
+2. **Package manager**: The venv was created by `uv` and has **no pip binary**. Dev deps (`pytest`, `pytest-mock`, `pytest-cov`) are declared in `[dependency-groups] dev` in `pyproject.toml`. Install them with:
+   - Preferred: `uv sync --group dev`
+   - Fallback: `uv pip install pytest pytest-mock pytest-cov --python .venv/bin/python`
+   - Check installed: `uv pip show pytest pytest-mock pytest-cov --python .venv/bin/python`
+3. **pytest may not be installed** — always run the install/check step first.
 4. **Never install packages globally** — always target `.venv/` via `--python`.
 
 ## Test Layout
