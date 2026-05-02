@@ -1,7 +1,10 @@
 import numpy as np
 from decimal import Decimal as _Decimal
 from typing import Optional, Union, cast
-from ._utils import quantize_amount, to_decimal
+try:
+    from ._utils import quantize_amount, to_decimal
+except ImportError:
+    from _utils import quantize_amount, to_decimal  # type: ignore[no-redef]
 
 
 class LoanCalculator:
@@ -151,6 +154,29 @@ class LoanCalculator:
             monthly_insurance_cost += remaining_capital * ((annual_rate * coverage) / 12)
         return monthly_insurance_cost
 
+    def _compute_analytical_monthly_repayment(self, principal: _Decimal, duration: int) -> _Decimal:
+        """Compute the monthly repayment that exactly amortizes ``principal`` over ``duration`` months.
+
+        Uses the standard amortization formula with an effective monthly rate that
+        folds in insurance (interest + insurance behave identically in the payment breakdown).
+
+        Args:
+            principal: Outstanding loan balance to amortize.
+            duration: Number of remaining months.
+
+        Returns:
+            The monthly repayment quantized to 2 d.p.
+        """
+        r_eff = (
+            float(self.annual_interest_rate)
+            + sum(float(r) * float(c) for r, c in zip(self.annual_insurance_rate, self.insurance_coverage))
+        ) / 12
+        if r_eff == 0:
+            monthly = float(principal) / duration
+        else:
+            monthly = float(principal) * r_eff / (1 - (1 + r_eff) ** (-duration))
+        return quantize_amount(to_decimal(monthly))
+
     def calculate_loan_amortization_table(
         self,
         duration: int,
@@ -158,6 +184,7 @@ class LoanCalculator:
         early_repayment: Optional[Union[int, float]] = None,
         early_repayment_month: int = 0,
         capital_tolerance: Union[int, float] = 0.1,
+        initial_capital: Optional[_Decimal] = None,
     ) -> dict[str, list[Union[_Decimal, int]]]:
         """Build a month-by-month loan amortization table.
 
@@ -184,15 +211,16 @@ class LoanCalculator:
             ``refunded_capital``, ``remaining_capital``, ``cumulated_costs``,
             each mapping to a list of Decimal (or int for ``month``).
         """
-        month1_interest = quantize_amount(self.loan_amount * self.annual_interest_rate / 12)
-        month1_insurance = quantize_amount(self._compute_monthly_insurance(remaining_capital=self.loan_amount))
+        effective_capital = initial_capital if initial_capital is not None else self.loan_amount
+        month1_interest = quantize_amount(effective_capital * self.annual_interest_rate / 12)
+        month1_insurance = quantize_amount(self._compute_monthly_insurance(remaining_capital=effective_capital))
         month1_refunded = quantize_amount(monthly_repayment - month1_interest - month1_insurance)
         loan_amortization_table = {
             "month": [1],
             "interest": [month1_interest],
             "insurance": [month1_insurance],
             "refunded_capital": [month1_refunded],
-            "remaining_capital": [quantize_amount(self.loan_amount - month1_refunded)],
+            "remaining_capital": [quantize_amount(effective_capital - month1_refunded)],
             "cumulated_costs": [quantize_amount(month1_interest + month1_insurance)],
         }
 
@@ -258,13 +286,42 @@ class LoanCalculator:
         Returns:
             A 2-tuple of (amortization_table dict, final monthly_repayment Decimal).
         """
-        # TODO To a look in case of early repayment calculation as the monthly repayment should stay the same but duration change.
+        if early_repayment is not None:
+            decimal_early_repayment = to_decimal(early_repayment)
+
+            # Phase 1: original repayment for months 1..early_repayment_month
+            phase1_table = self.calculate_loan_amortization_table(
+                duration=early_repayment_month,
+                monthly_repayment=monthly_repayment,
+                capital_tolerance=capital_tolerance,
+            )
+
+            # Phase 2: solve for a new (lower) repayment over the remaining term
+            new_principal = phase1_table["remaining_capital"][-1] - decimal_early_repayment
+            remaining_duration = duration - early_repayment_month
+            phase2_repayment = self._compute_analytical_monthly_repayment(new_principal, remaining_duration)
+
+            phase2_table = self.calculate_loan_amortization_table(
+                duration=remaining_duration,
+                monthly_repayment=phase2_repayment,
+                initial_capital=new_principal,
+                capital_tolerance=capital_tolerance,
+            )
+
+            costs_offset = phase1_table["cumulated_costs"][-1]
+            merged = {
+                "month":             phase1_table["month"] + [m + early_repayment_month for m in phase2_table["month"]],
+                "interest":          phase1_table["interest"]         + phase2_table["interest"],
+                "insurance":         phase1_table["insurance"]        + phase2_table["insurance"],
+                "refunded_capital":  phase1_table["refunded_capital"] + phase2_table["refunded_capital"],
+                "remaining_capital": phase1_table["remaining_capital"] + phase2_table["remaining_capital"],
+                "cumulated_costs":   phase1_table["cumulated_costs"]  + [c + costs_offset for c in phase2_table["cumulated_costs"]],
+            }
+            return merged, phase2_repayment
 
         loan_amortization_table = self.calculate_loan_amortization_table(
             duration=duration,
             monthly_repayment=monthly_repayment,
-            early_repayment=early_repayment,
-            early_repayment_month=early_repayment_month,
             capital_tolerance=capital_tolerance,
         )
 
@@ -290,8 +347,6 @@ class LoanCalculator:
             loan_amortization_table = self.calculate_loan_amortization_table(
                 duration=duration,
                 monthly_repayment=new_monthly_repayment,
-                early_repayment=early_repayment,
-                early_repayment_month=early_repayment_month,
                 capital_tolerance=capital_tolerance,
             )
 
@@ -301,28 +356,19 @@ class LoanCalculator:
                 new_monthly_repayment_list.pop(0)
                 new_monthly_repayment_list.append(new_monthly_repayment)
 
-            # Case 1: No early repayment — should end at duration
+            # Case 1: solver converged — table ends exactly at duration
             if all((
                 loan_amortization_table["remaining_capital"][-1] == 0,
                 loan_amortization_table["remaining_capital"][-2] != 0,
-                early_repayment is None,
                 loan_amortization_table["month"][-1] == duration,
             )):
                 return loan_amortization_table, new_monthly_repayment
-            # Case 2: Early repayment — can end earlier
-            elif all((
-                loan_amortization_table["remaining_capital"][-1] == 0,
-                loan_amortization_table["remaining_capital"][-2] != 0,
-                early_repayment is not None,
-            )):
-                return loan_amortization_table, new_monthly_repayment
-            # Case 3: End too early and/or solver stalled — reset with random ratio
+            # Case 2: ended too early and solver stalled — reset with random ratio
             elif all((
                 loan_amortization_table["remaining_capital"][-1] == 0,
                 capital_ratio == 0,
-                early_repayment is None,
             )):
                 capital_ratio = -np.random.random()
-            # Case 4: Other cases — reset capital ratio
+            # Case 3: other cases — reset capital ratio
             else:
                 capital_ratio = None
