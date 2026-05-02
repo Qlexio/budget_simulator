@@ -1,15 +1,10 @@
-"""Tests for loan_calculator.py — LoanCalculator.
-
-Green tests verify correct, expected behaviour.
-Red (xfail / skip) tests document known gaps: inputs the class does not guard
-against, non-deterministic code paths, and bugs where list-valued insurance
-parameters are not converted to Decimal.
-"""
+"""Tests for loan_calculator.py — LoanCalculator."""
 
 import pytest
 from decimal import Decimal
 
-from loan_calculator import LoanCalculator
+from budget_simulator.loan_calculator import LoanCalculator
+from budget_simulator._utils import quantize_amount
 
 
 # ---------------------------------------------------------------------------
@@ -166,10 +161,6 @@ class TestFormatInsuranceRelatedValues:
         )
         assert len(calc.annual_insurance_rate) == 2
 
-    # -----------------------------------------------------------------------
-    # RED — known gaps (xfail)
-    # -----------------------------------------------------------------------
-
     def test_two_insured_list_rate_elements_are_decimal(self):
         """List-input rate elements are converted to Decimal by the list branch."""
         calc = LoanCalculator(
@@ -193,6 +184,160 @@ class TestFormatInsuranceRelatedValues:
         )
         for item in calc.insurance_coverage:
             assert isinstance(item, Decimal)
+
+    # -----------------------------------------------------------------------
+    # RED — __init__ input-validation guards
+    # -----------------------------------------------------------------------
+
+    # Guard 1: loan_amount <= 0
+    def test_init_loan_amount_zero_raises_value_error(self):
+        """loan_amount=0 is not positive and must raise ValueError."""
+        with pytest.raises(ValueError, match="loan_amount"):
+            LoanCalculator(
+                loan_amount=0,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+            )
+
+    def test_init_loan_amount_negative_raises_value_error(self):
+        """loan_amount=-1 is negative and must raise ValueError."""
+        with pytest.raises(ValueError, match="loan_amount"):
+            LoanCalculator(
+                loan_amount=-1,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+            )
+
+    def test_init_loan_amount_one_does_not_raise(self):
+        """loan_amount=1 is at the positive boundary and must not raise."""
+        calc = LoanCalculator(
+            loan_amount=1,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+        )
+        assert calc.loan_amount == Decimal("1.00")
+
+    # Guard 2: annual_interest_rate < 0
+    def test_init_negative_interest_rate_raises_value_error(self):
+        """annual_interest_rate=-0.001 is negative and must raise ValueError."""
+        with pytest.raises(ValueError, match="annual_interest_rate"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=-0.001,
+                annual_insurance_rate=INSURANCE_RATE,
+            )
+
+    def test_init_zero_interest_rate_does_not_raise(self):
+        """annual_interest_rate=0 (0% interest) is valid and must not raise."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=0,
+            annual_insurance_rate=INSURANCE_RATE,
+        )
+        assert calc.annual_interest_rate == Decimal("0.00000")
+
+    # Guard 3: insured_number < 1 or not int
+    def test_init_insured_number_zero_raises_value_error(self):
+        """insured_number=0 is less than 1 and must raise ValueError."""
+        with pytest.raises(ValueError, match="insured_number"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insured_number=0,
+            )
+
+    def test_init_insured_number_negative_raises_value_error(self):
+        """insured_number=-1 is negative and must raise ValueError."""
+        with pytest.raises(ValueError, match="insured_number"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insured_number=-1,
+            )
+
+    def test_init_insured_number_float_raises_value_error(self):
+        """insured_number=1.0 is a float, not int, and must raise ValueError."""
+        with pytest.raises(ValueError, match="insured_number"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insured_number=1.0,  # type: ignore[arg-type]
+            )
+
+    # Guard 4: any annual_insurance_rate < 0
+    def test_init_negative_insurance_rate_scalar_raises_value_error(self):
+        """Scalar annual_insurance_rate=-0.001 must raise ValueError."""
+        with pytest.raises(ValueError, match="annual_insurance_rate"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=-0.001,
+            )
+
+    def test_init_negative_insurance_rate_in_list_raises_value_error(self):
+        """List annual_insurance_rate=[-0.001, 0.003] with insured_number=2 must raise ValueError."""
+        with pytest.raises(ValueError, match="annual_insurance_rate"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=[-0.001, 0.003],
+                insured_number=2,
+            )
+
+    # Guard 5: any insurance_coverage outside [0, 1]
+    def test_init_insurance_coverage_above_one_scalar_raises_value_error(self):
+        """Scalar insurance_coverage=1.1 exceeds 1.0 and must raise ValueError."""
+        with pytest.raises(ValueError, match="insurance_coverage"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insurance_coverage=1.1,
+            )
+
+    def test_init_insurance_coverage_negative_scalar_raises_value_error(self):
+        """Scalar insurance_coverage=-0.1 is below 0 and must raise ValueError."""
+        with pytest.raises(ValueError, match="insurance_coverage"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insurance_coverage=-0.1,
+            )
+
+    def test_init_insurance_coverage_above_one_in_list_raises_value_error(self):
+        """List insurance_coverage=[0.5, 1.1] with insured_number=2 must raise ValueError."""
+        with pytest.raises(ValueError, match="insurance_coverage"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insured_number=2,
+                insurance_coverage=[0.5, 1.1],
+            )
+
+    def test_init_insurance_coverage_zero_does_not_raise(self):
+        """insurance_coverage=0 is at the lower boundary and must not raise."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insurance_coverage=0,
+        )
+        assert calc.insurance_coverage[0] == Decimal("0.00")
+
+    def test_init_insurance_coverage_one_does_not_raise(self):
+        """insurance_coverage=1 is at the upper boundary and must not raise."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insurance_coverage=1,
+        )
+        assert calc.insurance_coverage[0] == Decimal("1.00")
 
 
 # ===========================================================================
@@ -416,10 +561,6 @@ class TestComputeMonthlyInsurance:
         ins_full = calc_single._compute_monthly_insurance(Decimal("100000.00"))
         ins_half = calc_single._compute_monthly_insurance(Decimal("50000.00"))
         assert abs(ins_half - ins_full / 2) <= Decimal("0.00001")
-
-    # -----------------------------------------------------------------------
-    # RED — known gaps (xfail)
-    # -----------------------------------------------------------------------
 
     def test_two_insured_list_rate_computes_insurance_without_error(self):
         """List-input rate elements work correctly in _compute_monthly_insurance."""
@@ -686,6 +827,110 @@ class TestCalculateLoanAmortizationTable:
                 f"remaining_capital differs before early repayment at index {i}"
             )
 
+    # -----------------------------------------------------------------------
+    # RED — calculate_loan_amortization_table input-validation guards
+    # -----------------------------------------------------------------------
+
+    # Guard 6: duration < 1
+    def test_amortization_duration_zero_raises_value_error(self, calc_single):
+        """duration=0 is less than 1 and must raise ValueError."""
+        with pytest.raises(ValueError, match="duration"):
+            calc_single.calculate_loan_amortization_table(
+                duration=0, monthly_repayment=REPAYMENT_HIGH
+            )
+
+    def test_amortization_duration_negative_raises_value_error(self, calc_single):
+        """duration=-1 is negative and must raise ValueError."""
+        with pytest.raises(ValueError, match="duration"):
+            calc_single.calculate_loan_amortization_table(
+                duration=-1, monthly_repayment=REPAYMENT_HIGH
+            )
+
+    def test_amortization_duration_one_does_not_raise(self, calc_single):
+        """duration=1 is at the minimum valid boundary and must not raise."""
+        table = calc_single.calculate_loan_amortization_table(
+            duration=1, monthly_repayment=REPAYMENT_HIGH
+        )
+        assert table["month"] == [1]
+
+    # Guard 7: early_repayment provided with early_repayment <= 0
+    def test_amortization_early_repayment_zero_raises_value_error(self, calc_single):
+        """early_repayment=0 is not positive and must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment"):
+            calc_single.calculate_loan_amortization_table(
+                duration=DURATION,
+                monthly_repayment=REPAYMENT_HIGH,
+                early_repayment=0,
+                early_repayment_month=60,
+            )
+
+    def test_amortization_early_repayment_negative_raises_value_error(self, calc_single):
+        """early_repayment=-1000 is negative and must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment"):
+            calc_single.calculate_loan_amortization_table(
+                duration=DURATION,
+                monthly_repayment=REPAYMENT_HIGH,
+                early_repayment=-1000,
+                early_repayment_month=60,
+            )
+
+    # Guard 8: early_repayment provided with early_repayment_month out of range
+    def test_amortization_early_repayment_month_zero_raises_value_error(self, calc_single):
+        """early_repayment_month=0 is below the valid minimum of 1 and must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            calc_single.calculate_loan_amortization_table(
+                duration=DURATION,
+                monthly_repayment=REPAYMENT_HIGH,
+                early_repayment=20_000,
+                early_repayment_month=0,
+            )
+
+    def test_amortization_early_repayment_month_equals_duration_raises_value_error(
+        self, calc_single
+    ):
+        """early_repayment_month=duration is out of range (must be < duration) and must raise."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            calc_single.calculate_loan_amortization_table(
+                duration=DURATION,
+                monthly_repayment=REPAYMENT_HIGH,
+                early_repayment=20_000,
+                early_repayment_month=DURATION,
+            )
+
+    def test_amortization_early_repayment_month_above_duration_raises_value_error(
+        self, calc_single
+    ):
+        """early_repayment_month=duration+1 exceeds the valid range and must raise."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            calc_single.calculate_loan_amortization_table(
+                duration=DURATION,
+                monthly_repayment=REPAYMENT_HIGH,
+                early_repayment=20_000,
+                early_repayment_month=DURATION + 1,
+            )
+
+    def test_amortization_early_repayment_month_one_does_not_raise(self, calc_single):
+        """early_repayment_month=1 with duration=180 is at the minimum valid boundary."""
+        table = calc_single.calculate_loan_amortization_table(
+            duration=180,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=1,
+        )
+        assert len(table["month"]) >= 1
+
+    def test_amortization_early_repayment_month_duration_minus_one_does_not_raise(
+        self, calc_single
+    ):
+        """early_repayment_month=179 with duration=180 is at the maximum valid boundary."""
+        table = calc_single.calculate_loan_amortization_table(
+            duration=180,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=179,
+        )
+        assert len(table["month"]) >= 1
+
 
 # ===========================================================================
 # calculate_monthly_repayment_and_loan_amortization_table
@@ -694,12 +939,11 @@ class TestCalculateLoanAmortizationTable:
 class TestCalculateMonthlyRepaymentAndLoanAmortizationTable:
     """Tests for LoanCalculator.calculate_monthly_repayment_and_loan_amortization_table.
 
-    Only the two deterministic paths are tested:
+    Two paths are tested:
     - Case 1: no early repayment, correct repayment passed as starting estimate
               → solver returns immediately with the passed-through value.
-    - Case 2: early repayment provided → solver converges and table ends before duration.
-
-    The stochastic fallback (np.random.random()) is documented via a skip stub.
+    - Case 2 / Strategy B: early repayment provided → two-phase table spanning
+              exactly ``duration`` months, with a new lower repayment for Phase 2.
     """
 
     # -----------------------------------------------------------------------
@@ -798,17 +1042,25 @@ class TestCalculateMonthlyRepaymentAndLoanAmortizationTable:
         assert table["remaining_capital"][-2] > Decimal("0.00")
 
     def test_case2_table_ends_before_duration(self, calc_single):
-        """Case 2: early repayment makes the loan finish before month 180."""
+        """Case 2 (Strategy B): early repayment → merged table always spans full duration.
+
+        Strategy B merges Phase 1 (months 1..60) and Phase 2 (months 61..180) into
+        a single table of exactly DURATION rows; it no longer terminates early.
+        """
         table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
             duration=DURATION,
             monthly_repayment=REPAYMENT_HIGH,
             early_repayment=20_000,
             early_repayment_month=60,
         )
-        assert table["month"][-1] < DURATION
+        assert len(table["month"]) == DURATION
 
     def test_case2_returned_monthly_repayment_is_decimal(self, calc_single):
-        """Case 2: solver returns a Decimal monthly repayment."""
+        """Case 2 (Strategy B): returned value is the Phase 2 analytical repayment as Decimal.
+
+        The returned repayment is the new (lower) payment computed analytically for
+        Phase 2, not the original REPAYMENT_HIGH. For this fixture it equals 420.28.
+        """
         _, monthly = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
             duration=DURATION,
             monthly_repayment=REPAYMENT_HIGH,
@@ -816,29 +1068,238 @@ class TestCalculateMonthlyRepaymentAndLoanAmortizationTable:
             early_repayment_month=60,
         )
         assert isinstance(monthly, Decimal)
+        assert monthly == Decimal("420.28")
 
-    def test_case2_table_ends_at_month_131(self, calc_single):
-        """Case 2: 690/month + 20000 early repayment at month 60 ends at month 131."""
+    def test_case2_table_ends_at_month_180(self, calc_single):
+        """Case 2 (Strategy B): merged table's last month is always DURATION (180).
+
+        Previously this tested that the table ended at month 131 (early termination).
+        Strategy B always produces exactly DURATION rows, so the last month is 180.
+        """
         table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
             duration=DURATION,
             monthly_repayment=REPAYMENT_HIGH,
             early_repayment=20_000,
             early_repayment_month=60,
         )
-        assert table["month"][-1] == 131
+        assert table["month"][-1] == DURATION
 
     # -----------------------------------------------------------------------
-    # RED — stochastic fallback not tested (skip stub)
+    # GREEN — Strategy B (early repayment)
     # -----------------------------------------------------------------------
 
-    @pytest.mark.skip(
-        reason=(
-            "Case 3 / stochastic fallback: the solver uses np.random.random() when "
-            "it stalls with capital_ratio==0 and no early repayment. This path is "
-            "non-deterministic and cannot be reliably asserted without mocking numpy's "
-            "random generator. Covered separately if a seed-fixture approach is added."
+    def test_strategy_b_table_has_exactly_duration_rows(self, calc_single):
+        """Strategy B: merged table (Phase 1 + Phase 2) has exactly DURATION rows."""
+        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=DURATION,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=60,
         )
-    )
-    def test_stochastic_fallback_not_tested(self, calc_single):
-        """Stub: documents that the random-fallback branch is intentionally untested."""
-        pass
+        assert len(table["month"]) == DURATION
+
+    def test_strategy_b_phase2_repayment_lower_than_original(self, calc_single):
+        """Strategy B: the analytically-derived Phase 2 repayment is lower than the original.
+
+        After a 20 000 lump-sum reduction of principal, the new payment to service the
+        smaller balance over the remaining 120 months is less than REPAYMENT_HIGH (690.00).
+        """
+        _, phase2_repayment = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=DURATION,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=60,
+        )
+        assert phase2_repayment < REPAYMENT_HIGH
+
+    def test_strategy_b_remaining_capital_zero_at_end(self, calc_single):
+        """Strategy B: the last row of the merged table has zero remaining capital."""
+        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=DURATION,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=60,
+        )
+        assert table["remaining_capital"][-1] == Decimal("0.00")
+
+    def test_strategy_b_cumulated_costs_monotone(self, calc_single):
+        """Strategy B: cumulated_costs is non-decreasing across the full merged table.
+
+        The Phase 1→Phase 2 boundary (month 60→61) must not create a dip because the
+        Phase 2 cumulated_costs are offset by Phase 1's running total.
+        """
+        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=DURATION,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=60,
+        )
+        costs = table["cumulated_costs"]
+        for i in range(len(costs) - 1):
+            assert costs[i] <= costs[i + 1], (
+                f"cumulated_costs decreased at index {i} "
+                f"(month {table['month'][i]}→{table['month'][i+1]}): "
+                f"{costs[i]} > {costs[i+1]}"
+            )
+
+    def test_strategy_b_phase1_rows_match_no_early_repayment_baseline(self, calc_single):
+        """Strategy B: the first 60 rows of the merged table are identical to a plain
+        60-month amortization table at REPAYMENT_HIGH (no early repayment).
+
+        Phase 1 is computed independently with the same inputs, so every column
+        for months 1..60 must match the standalone baseline exactly.
+        """
+        baseline = calc_single.calculate_loan_amortization_table(
+            duration=60, monthly_repayment=REPAYMENT_HIGH
+        )
+        merged, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=DURATION,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=60,
+        )
+        for i in range(60):
+            for key in ("interest", "insurance", "refunded_capital", "remaining_capital"):
+                assert merged[key][i] == baseline[key][i], (
+                    f"Phase 1 mismatch at index {i} (month {i+1}), key={key!r}: "
+                    f"merged={merged[key][i]!r} vs baseline={baseline[key][i]!r}"
+                )
+
+    # -----------------------------------------------------------------------
+    # RED — calculate_monthly_repayment_and_loan_amortization_table guards
+    # -----------------------------------------------------------------------
+
+    # Guard 9: duration < 1
+    def test_solver_duration_zero_raises_value_error(self, calc_single):
+        """duration=0 is less than 1 and must raise ValueError."""
+        with pytest.raises(ValueError, match="duration"):
+            calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=0, monthly_repayment=REPAYMENT_HIGH
+            )
+
+    # Guard 10: early_repayment provided with early_repayment <= 0
+    def test_solver_early_repayment_zero_raises_value_error(self, calc_single):
+        """early_repayment=0 is not positive and must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment"):
+            calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=DURATION,
+                monthly_repayment=REPAYMENT_HIGH,
+                early_repayment=0,
+                early_repayment_month=60,
+            )
+
+    # Guard 11: early_repayment provided with early_repayment_month out of range
+    def test_solver_early_repayment_month_zero_raises_value_error(self, calc_single):
+        """early_repayment_month=0 is below the valid minimum of 1 and must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=DURATION,
+                monthly_repayment=REPAYMENT_HIGH,
+                early_repayment=20_000,
+                early_repayment_month=0,
+            )
+
+    def test_solver_early_repayment_month_equals_duration_raises_value_error(
+        self, calc_single
+    ):
+        """early_repayment_month=duration is out of range (must be < duration) and must raise."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=DURATION,
+                monthly_repayment=REPAYMENT_HIGH,
+                early_repayment=20_000,
+                early_repayment_month=DURATION,
+            )
+
+
+
+# ===========================================================================
+# calculate_loan_amortization_table — initial_capital parameter
+# ===========================================================================
+
+class TestCalculateLoanAmortizationTableInitialCapital:
+    """Tests for the initial_capital parameter of calculate_loan_amortization_table."""
+
+    # -----------------------------------------------------------------------
+    # GREEN — initial_capital overrides self.loan_amount for month 1 seeding
+    # -----------------------------------------------------------------------
+
+    def test_initial_capital_overrides_loan_amount_for_month1_interest(self):
+        """Month 1 interest is seeded from initial_capital, not self.loan_amount.
+
+        The calculator is constructed with loan_amount=100_000 but
+        initial_capital=46123.78 is passed explicitly. Month 1 interest must
+        be based on 46123.78 × annual_rate / 12.
+        """
+        calc = LoanCalculator(
+            loan_amount=100_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.003,
+            insured_number=1,
+            insurance_coverage=1.0,
+        )
+        initial_cap = Decimal("46123.78")
+        table = calc.calculate_loan_amortization_table(
+            duration=120,
+            monthly_repayment=Decimal("420.28"),
+            initial_capital=initial_cap,
+        )
+        # 46123.78 × 0.01500 / 12 = 57.654725 → quantized to 57.65
+        expected = quantize_amount(initial_cap * Decimal("0.01500") / 12)
+        assert table["interest"][0] == expected
+
+    def test_initial_capital_overrides_loan_amount_for_month1_insurance(self):
+        """Month 1 insurance is seeded from initial_capital, not self.loan_amount."""
+        calc = LoanCalculator(
+            loan_amount=100_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.003,
+            insured_number=1,
+            insurance_coverage=1.0,
+        )
+        initial_cap = Decimal("46123.78")
+        table = calc.calculate_loan_amortization_table(
+            duration=120,
+            monthly_repayment=Decimal("420.28"),
+            initial_capital=initial_cap,
+        )
+        # 46123.78 × (0.00300 × 1.0) / 12 = 11.530945 → quantized to 11.53
+        expected = quantize_amount(initial_cap * Decimal("0.00300") / 12)
+        assert table["insurance"][0] == expected
+
+    def test_initial_capital_not_provided_uses_loan_amount(self):
+        """Without initial_capital, month 1 is seeded from self.loan_amount (default)."""
+        calc = LoanCalculator(
+            loan_amount=100_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.003,
+            insured_number=1,
+            insurance_coverage=1.0,
+        )
+        table = calc.calculate_loan_amortization_table(
+            duration=180,
+            monthly_repayment=Decimal("690.00"),
+        )
+        # 100000 × 0.01500 / 12 = 125.00
+        assert table["interest"][0] == Decimal("125.00")
+
+    def test_initial_capital_different_from_loan_amount_produces_different_month1(self):
+        """initial_capital != loan_amount → month 1 rows differ from the default table."""
+        calc = LoanCalculator(
+            loan_amount=100_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.003,
+            insured_number=1,
+            insurance_coverage=1.0,
+        )
+        table_default = calc.calculate_loan_amortization_table(
+            duration=120,
+            monthly_repayment=Decimal("420.28"),
+        )
+        table_override = calc.calculate_loan_amortization_table(
+            duration=120,
+            monthly_repayment=Decimal("420.28"),
+            initial_capital=Decimal("46123.78"),
+        )
+        assert table_override["interest"][0] != table_default["interest"][0]
+        assert table_override["remaining_capital"][0] != table_default["remaining_capital"][0]

@@ -1,10 +1,6 @@
-import numpy as np
 from decimal import Decimal as _Decimal
 from typing import Optional, Union, cast
-try:
-    from ._utils import quantize_amount, to_decimal
-except ImportError:
-    from _utils import quantize_amount, to_decimal  # type: ignore[no-redef]
+from ._utils import quantize_amount, to_decimal
 
 
 class LoanCalculator:
@@ -43,12 +39,26 @@ class LoanCalculator:
             insurance_coverage: Coverage ratio(s) per insured person (0–1).
                 Pass a single value or a list. Defaults to 1 (full coverage).
         """
+        if loan_amount <= 0:
+            raise ValueError(f"loan_amount must be positive, got {loan_amount}")
+        if annual_interest_rate < 0:
+            raise ValueError(f"annual_interest_rate must be non-negative, got {annual_interest_rate}")
+        if not isinstance(insured_number, int) or insured_number < 1:
+            raise ValueError(f"insured_number must be a positive integer, got {insured_number}")
+
         self.loan_amount = to_decimal(loan_amount)
         self.annual_interest_rate = to_decimal(annual_interest_rate, precision="0.00001")
 
         self.insured_number = insured_number
         self.annual_insurance_rate = self._format_insurance_related_values(annual_insurance_rate, precision="0.00001")
         self.insurance_coverage = self._format_insurance_related_values(cast(Union[int, float], insurance_coverage))
+
+        for rate in self.annual_insurance_rate:
+            if rate < 0:
+                raise ValueError(f"annual_insurance_rate values must be non-negative, got {rate}")
+        for cov in self.insurance_coverage:
+            if not (_Decimal("0") <= cov <= _Decimal("1")):
+                raise ValueError(f"insurance_coverage values must be in [0, 1], got {cov}")
 
         self.monthly_repayment = to_decimal(monthly_repayment)
         self.loan_amortization_table = None
@@ -210,7 +220,22 @@ class LoanCalculator:
             A dict with keys ``month``, ``interest``, ``insurance``,
             ``refunded_capital``, ``remaining_capital``, ``cumulated_costs``,
             each mapping to a list of Decimal (or int for ``month``).
+
+        Raises:
+            ValueError: If ``duration`` < 1, or if ``early_repayment`` is provided
+                with an invalid ``early_repayment_month`` or non-positive amount.
         """
+        if duration < 1:
+            raise ValueError(f"duration must be at least 1, got {duration}")
+        if early_repayment is not None:
+            if early_repayment <= 0:
+                raise ValueError(f"early_repayment must be positive, got {early_repayment}")
+            if not (1 <= early_repayment_month < duration):
+                raise ValueError(
+                    f"early_repayment_month must be between 1 and duration-1 ({duration - 1}), "
+                    f"got {early_repayment_month}"
+                )
+
         effective_capital = initial_capital if initial_capital is not None else self.loan_amount
         month1_interest = quantize_amount(effective_capital * self.annual_interest_rate / 12)
         month1_insurance = quantize_amount(self._compute_monthly_insurance(remaining_capital=effective_capital))
@@ -269,12 +294,10 @@ class LoanCalculator:
 
         Uses a capital-ratio heuristic to adjust ``monthly_repayment`` upward or
         downward each iteration until the amortization table ends at zero remaining
-        capital on exactly month ``duration`` (or earlier when ``early_repayment``
-        is provided). Falls back to a random negative capital ratio if the solver
-        stalls.
-
-        Note:
-            The random fallback makes this method non-deterministic when it stalls.
+        capital on exactly month ``duration``. When ``early_repayment`` is provided,
+        uses a two-phase analytical approach (Strategy B): Phase 1 runs at the
+        original repayment up to ``early_repayment_month``, then Phase 2 computes
+        a new lower repayment for the remaining term.
 
         Args:
             duration: Target loan duration in months.
@@ -285,7 +308,22 @@ class LoanCalculator:
 
         Returns:
             A 2-tuple of (amortization_table dict, final monthly_repayment Decimal).
+
+        Raises:
+            ValueError: If ``duration`` < 1, or if ``early_repayment`` is provided
+                with an invalid ``early_repayment_month`` or non-positive amount.
         """
+        if duration < 1:
+            raise ValueError(f"duration must be at least 1, got {duration}")
+        if early_repayment is not None:
+            if early_repayment <= 0:
+                raise ValueError(f"early_repayment must be positive, got {early_repayment}")
+            if not (1 <= early_repayment_month < duration):
+                raise ValueError(
+                    f"early_repayment_month must be between 1 and duration-1 ({duration - 1}), "
+                    f"got {early_repayment_month}"
+                )
+
         if early_repayment is not None:
             decimal_early_repayment = to_decimal(early_repayment)
 
@@ -363,12 +401,12 @@ class LoanCalculator:
                 loan_amortization_table["month"][-1] == duration,
             )):
                 return loan_amortization_table, new_monthly_repayment
-            # Case 2: ended too early and solver stalled — reset with random ratio
+            # Case 2: ended too early and solver stalled — reset with fixed negative ratio
             elif all((
                 loan_amortization_table["remaining_capital"][-1] == 0,
                 capital_ratio == 0,
             )):
-                capital_ratio = -np.random.random()
+                capital_ratio = to_decimal("-0.5", precision="0.000001")
             # Case 3: other cases — reset capital ratio
             else:
                 capital_ratio = None
