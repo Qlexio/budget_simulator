@@ -1,7 +1,7 @@
 import numpy as np
 from decimal import Decimal as _Decimal
 from typing import Optional, Union, cast
-from _utils import quantize_amount, to_decimal
+from ._utils import quantize_amount, to_decimal
 
 
 class LoanCalculator:

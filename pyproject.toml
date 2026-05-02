@@ -16,5 +16,9 @@ dev = [
     "pytest-cov",
 ]
 
+[tool.setuptools]
+packages = ["budget_simulator"]
+package-dir = {"budget_simulator" = "."}
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
