@@ -1,3 +1,4 @@
+import warnings
 from decimal import Decimal as _Decimal
 from typing import Optional, Union, cast
 from ._utils import quantize_amount, to_decimal
@@ -102,10 +103,21 @@ class LoanCalculator:
                 ret_insurance_value.append(decimal_insurance_value)
             return ret_insurance_value
         if insured_number > 1 and isinstance(decimal_insurance_value, list):
-            ret_insurance_value = []
-            for _, ins_value in zip(range(insured_number), decimal_insurance_value):
-                ret_insurance_value.append(to_decimal(ins_value, precision=precision))
-            return ret_insurance_value
+            if len(decimal_insurance_value) == 1:
+                return [to_decimal(decimal_insurance_value[0], precision=precision)] * insured_number
+            if len(decimal_insurance_value) < insured_number:
+                raise ValueError(
+                    f"insurance list length ({len(decimal_insurance_value)}) is less than "
+                    f"insured_number ({insured_number}): cannot determine per-person values"
+                )
+            if len(decimal_insurance_value) > insured_number:
+                warnings.warn(
+                    f"insurance list length ({len(decimal_insurance_value)}) exceeds "
+                    f"insured_number ({insured_number}): extra values will be ignored",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            return [to_decimal(ins_value, precision=precision) for ins_value in decimal_insurance_value[:insured_number]]
         return []
 
     def _compute_payment_breakdown(

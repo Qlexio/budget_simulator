@@ -339,6 +339,218 @@ class TestFormatInsuranceRelatedValues:
         )
         assert calc.insurance_coverage[0] == Decimal("1.00")
 
+    # -----------------------------------------------------------------------
+    # GREEN — new list-broadcast and list-exact-match behaviours (post bug fix)
+    # -----------------------------------------------------------------------
+
+    def test_two_insured_list_of_one_rate_is_broadcast_to_both(self):
+        """List of length 1 with insured_number=2 broadcasts the single rate to both persons.
+
+        New behaviour after the zip-truncation fix: a length-1 list is treated
+        identically to a scalar, duplicating the value across all insured persons.
+        """
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=[0.003],
+            insured_number=2,
+        )
+        assert len(calc.annual_insurance_rate) == 2
+        assert calc.annual_insurance_rate[0] == calc.annual_insurance_rate[1]
+        assert calc.annual_insurance_rate[0] == Decimal("0.00300")
+
+    def test_two_insured_list_of_one_rate_elements_are_decimal(self):
+        """Broadcast elements from a length-1 list are Decimal instances."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=[0.003],
+            insured_number=2,
+        )
+        for item in calc.annual_insurance_rate:
+            assert isinstance(item, Decimal)
+
+    def test_two_insured_list_of_one_coverage_is_broadcast_to_both(self):
+        """List-of-one coverage with insured_number=2 broadcasts to both persons."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=2,
+            insurance_coverage=[0.75],
+        )
+        assert len(calc.insurance_coverage) == 2
+        assert calc.insurance_coverage[0] == calc.insurance_coverage[1]
+        assert calc.insurance_coverage[0] == Decimal("0.75")
+
+    def test_two_insured_exact_list_length_rate_values_preserved(self):
+        """List of exactly insured_number elements is used unchanged (all values kept).
+
+        Both distinct rates must be stored in the order they were provided.
+        """
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=[0.002, 0.004],
+            insured_number=2,
+        )
+        assert len(calc.annual_insurance_rate) == 2
+        assert calc.annual_insurance_rate[0] == Decimal("0.00200")
+        assert calc.annual_insurance_rate[1] == Decimal("0.00400")
+
+    def test_two_insured_exact_list_length_coverage_values_preserved(self):
+        """List of exactly insured_number coverage elements is used unchanged."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=2,
+            insurance_coverage=[0.6, 0.4],
+        )
+        assert len(calc.insurance_coverage) == 2
+        assert calc.insurance_coverage[0] == Decimal("0.60")
+        assert calc.insurance_coverage[1] == Decimal("0.40")
+
+    # -----------------------------------------------------------------------
+    # GREEN — list longer than insured_number: warns and truncates
+    # -----------------------------------------------------------------------
+
+    def test_longer_rate_list_emits_user_warning(self):
+        """List with more elements than insured_number must emit a UserWarning."""
+        with pytest.warns(UserWarning):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=[0.002, 0.004, 0.006],
+                insured_number=2,
+            )
+
+    def test_longer_rate_list_truncates_to_insured_number(self):
+        """List of length 3 with insured_number=2 is truncated to the first 2 elements."""
+        with pytest.warns(UserWarning):
+            calc = LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=[0.002, 0.004, 0.006],
+                insured_number=2,
+            )
+        assert len(calc.annual_insurance_rate) == 2
+        assert calc.annual_insurance_rate[0] == Decimal("0.00200")
+        assert calc.annual_insurance_rate[1] == Decimal("0.00400")
+
+    def test_longer_coverage_list_emits_user_warning(self):
+        """List of coverage with more elements than insured_number must emit a UserWarning."""
+        with pytest.warns(UserWarning):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insured_number=2,
+                insurance_coverage=[0.5, 0.3, 0.2],
+            )
+
+    def test_longer_coverage_list_truncates_to_insured_number(self):
+        """Coverage list of length 3 with insured_number=2 is truncated to the first 2."""
+        with pytest.warns(UserWarning):
+            calc = LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insured_number=2,
+                insurance_coverage=[0.5, 0.3, 0.2],
+            )
+        assert len(calc.insurance_coverage) == 2
+        assert calc.insurance_coverage[0] == Decimal("0.50")
+        assert calc.insurance_coverage[1] == Decimal("0.30")
+
+    # Regression: the original zip() behaviour silently truncated without warning.
+    # This specific case (length-3 list, insured_number=2) must now warn.
+    def test_regression_zip_truncation_now_warns(self):
+        """Regression: list of length 3 with insured_number=2 previously used zip() and
+        silently dropped the third element with no warning. After the fix, a UserWarning
+        must be emitted so callers are notified of the mismatch.
+        """
+        with pytest.warns(UserWarning, match="extra values will be ignored"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=[0.002, 0.004, 0.006],
+                insured_number=2,
+            )
+
+    # -----------------------------------------------------------------------
+    # RED — list shorter than insured_number raises ValueError
+    # -----------------------------------------------------------------------
+
+    def test_rate_list_shorter_than_insured_number_raises_value_error(self):
+        """List of length 1 with insured_number=3 cannot be broadcast (len > 1) and
+        is shorter than insured_number → must raise ValueError mentioning 'less than'.
+        """
+        with pytest.raises(ValueError, match="less than"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=[0.002, 0.004],
+                insured_number=3,
+            )
+
+    def test_coverage_list_shorter_than_insured_number_raises_value_error(self):
+        """Coverage list of length 1 with insured_number=3 is shorter (len > 1 check
+        excluded) — must raise ValueError mentioning 'less than'.
+        """
+        with pytest.raises(ValueError, match="less than"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                insured_number=3,
+                insurance_coverage=[0.5, 0.3],
+            )
+
+    def test_rate_list_of_two_with_insured_number_four_raises_value_error(self):
+        """A list that is genuinely shorter (length 2, insured_number=4) must raise ValueError."""
+        with pytest.raises(ValueError, match="less than"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=[0.002, 0.004],
+                insured_number=4,
+            )
+
+    def test_format_insurance_directly_shorter_list_raises_value_error(self, calc_single):
+        """Direct call to _format_insurance_related_values with a 1-element list and
+        insured_number=3 must raise ValueError (len == 1 triggers broadcast, len > 1 but
+        < insured_number triggers the error).
+        """
+        # A length-2 list with insured_number=3 is shorter → raises
+        with pytest.raises(ValueError, match="less than"):
+            calc_single._format_insurance_related_values(
+                [0.002, 0.004], insured_number=3, precision="0.00001"
+            )
+
+    def test_format_insurance_directly_longer_list_warns_and_truncates(self, calc_single):
+        """Direct call to _format_insurance_related_values with a 3-element list and
+        insured_number=2 must emit a UserWarning and return only the first 2 elements.
+        """
+        with pytest.warns(UserWarning, match="extra values will be ignored"):
+            result = calc_single._format_insurance_related_values(
+                [0.001, 0.003, 0.005], insured_number=2, precision="0.00001"
+            )
+        assert len(result) == 2
+        assert result[0] == Decimal("0.00100")
+        assert result[1] == Decimal("0.00300")
+
+    def test_format_insurance_directly_list_of_one_broadcasts(self, calc_single):
+        """Direct call with a length-1 list and insured_number=2 must broadcast the
+        single value to both positions without warning.
+        """
+        result = calc_single._format_insurance_related_values(
+            [0.003], insured_number=2, precision="0.00001"
+        )
+        assert len(result) == 2
+        assert result[0] == result[1]
+        assert result[0] == Decimal("0.00300")
+
 
 # ===========================================================================
 # _compute_payment_breakdown
