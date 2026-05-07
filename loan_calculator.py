@@ -12,6 +12,10 @@ class LoanCalculator:
     duration. Supports one-time early repayments and multi-person insurance.
     """
 
+    # Hard upper bound on solver iterations; prevents infinite loops in pathological
+    # cases that neither converge nor trigger the oscillation detector.
+    _SOLVER_MAX_ITERATIONS = 1000
+
     def __init__(
         self,
         loan_amount: Union[int, float],
@@ -304,12 +308,27 @@ class LoanCalculator:
         """Iteratively solve for the monthly repayment that exactly amortizes the loan
         over ``duration`` months, then return the final amortization table.
 
+        **No early repayment — iterative solver:**
         Uses a capital-ratio heuristic to adjust ``monthly_repayment`` upward or
         downward each iteration until the amortization table ends at zero remaining
-        capital on exactly month ``duration``. When ``early_repayment`` is provided,
-        uses a two-phase analytical approach (Strategy B): Phase 1 runs at the
-        original repayment up to ``early_repayment_month``, then Phase 2 computes
-        a new lower repayment for the remaining term.
+        capital on exactly month ``duration``.
+
+        Each iteration scales the current repayment by ``(1 + capital_ratio / 2)``,
+        where ``capital_ratio`` is derived from the residual remaining capital relative
+        to the original loan amount. This drives the repayment toward the value that
+        exactly exhausts the loan at ``duration``.
+
+        Convergence guard: the solver runs for at most ``self._SOLVER_MAX_ITERATIONS``
+        iterations. Oscillation — where the remaining capital alternates between the
+        same positive and negative cent-quantized values — is detected and resolved by
+        returning the mean of the two bracketing repayments with a ``UserWarning``.
+        A ``RuntimeError`` is raised if neither condition is met within the limit.
+
+        **With early repayment — Strategy B (analytical two-phase approach):**
+        Phase 1 runs the original repayment from month 1 to ``early_repayment_month``.
+        Phase 2 calls ``_compute_analytical_monthly_repayment`` on the reduced principal
+        and runs for ``duration - early_repayment_month`` months. The two tables are
+        merged into one spanning exactly ``duration`` rows.
 
         Args:
             duration: Target loan duration in months.
@@ -324,6 +343,8 @@ class LoanCalculator:
         Raises:
             ValueError: If ``duration`` < 1, or if ``early_repayment`` is provided
                 with an invalid ``early_repayment_month`` or non-positive amount.
+            RuntimeError: If the iterative solver fails to converge within
+                ``self._SOLVER_MAX_ITERATIONS`` iterations without oscillating.
         """
         if duration < 1:
             raise ValueError(f"duration must be at least 1, got {duration}")
@@ -376,18 +397,29 @@ class LoanCalculator:
         )
 
         def calculate_new_monthly_repayment(monthly_repayment, current_remaining_capital, loan_amount, initial_capital_ratio=None):
+            # Use the provided ratio (stall recovery) or derive it from the residual
+            # remaining capital relative to the original loan amount. Dividing by 2
+            # dampens the correction to avoid overshooting.
             capital_ratio = initial_capital_ratio or current_remaining_capital / loan_amount
-            capital_ratio = to_decimal(capital_ratio, precision="0.000001")
+            # to_decimal only accepts int/float; convert via float to handle Decimal input
+            capital_ratio = to_decimal(float(capital_ratio), precision="0.000001")
             return quantize_amount(monthly_repayment * (1 + (capital_ratio / 2))), capital_ratio
 
+        # Fast exit: initial estimate already converges without iteration
         if all((loan_amortization_table["remaining_capital"][-1] == 0, loan_amortization_table["remaining_capital"][-2] != 0)):
             return loan_amortization_table, monthly_repayment
 
         new_monthly_repayment = monthly_repayment
-        new_monthly_repayment_list = []
         capital_ratio = None
 
-        while True:
+        # last_positive / last_negative track the most recent iteration that left a
+        # positive / negative remaining capital, stored as (remaining_capital, repayment).
+        # When the same remaining-capital value repeats with the same sign, the solver
+        # is cycling: the true solution lies between the two bracketing repayments.
+        last_positive: Optional[tuple[_Decimal, _Decimal]] = None
+        last_negative: Optional[tuple[_Decimal, _Decimal]] = None
+
+        for _ in range(self._SOLVER_MAX_ITERATIONS):
             new_monthly_repayment, capital_ratio = calculate_new_monthly_repayment(
                 new_monthly_repayment,
                 loan_amortization_table["remaining_capital"][-1],
@@ -399,26 +431,71 @@ class LoanCalculator:
                 monthly_repayment=new_monthly_repayment,
                 capital_tolerance=capital_tolerance,
             )
-
-            if len(new_monthly_repayment_list) < 10:
-                new_monthly_repayment_list.append(new_monthly_repayment)
-            else:
-                new_monthly_repayment_list.pop(0)
-                new_monthly_repayment_list.append(new_monthly_repayment)
+            current_remaining = loan_amortization_table["remaining_capital"][-1]
 
             # Case 1: solver converged — table ends exactly at duration
             if all((
-                loan_amortization_table["remaining_capital"][-1] == 0,
+                current_remaining == 0,
                 loan_amortization_table["remaining_capital"][-2] != 0,
                 loan_amortization_table["month"][-1] == duration,
             )):
                 return loan_amortization_table, new_monthly_repayment
-            # Case 2: ended too early and solver stalled — reset with fixed negative ratio
-            elif all((
-                loan_amortization_table["remaining_capital"][-1] == 0,
-                capital_ratio == 0,
-            )):
+
+            # Case 2: oscillation detection — remaining capital alternates between the
+            # same positive and negative values (exact Decimal equality at cent precision).
+            # A converging sequence (e.g. -100 → +50 → -25) never repeats the same value
+            # for a given sign, so this only fires when the solver is truly stuck.
+            if current_remaining > 0:
+                if last_positive is not None and last_negative is not None and current_remaining == last_positive[0]:
+                    # Same positive residual seen again and a negative bracket exists:
+                    # solver is cycling. Return the mean of the two bracketing repayments.
+                    best_repayment = quantize_amount(
+                        (last_negative[1] + last_positive[1]) / 2
+                    )
+                    warnings.warn(
+                        f"Solver oscillating around {best_repayment}; "
+                        "returning best-effort result",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    loan_amortization_table = self.calculate_loan_amortization_table(
+                        duration=duration,
+                        monthly_repayment=best_repayment,
+                        capital_tolerance=capital_tolerance,
+                    )
+                    return loan_amortization_table, best_repayment
+                last_positive = (current_remaining, new_monthly_repayment)
+
+            elif current_remaining < 0:
+                if last_negative is not None and last_positive is not None and current_remaining == last_negative[0]:
+                    # Same negative residual seen again and a positive bracket exists:
+                    # solver is cycling. Return the mean of the two bracketing repayments.
+                    best_repayment = quantize_amount(
+                        (last_positive[1] + last_negative[1]) / 2
+                    )
+                    warnings.warn(
+                        f"Solver oscillating around {best_repayment}; "
+                        "returning best-effort result",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    loan_amortization_table = self.calculate_loan_amortization_table(
+                        duration=duration,
+                        monthly_repayment=best_repayment,
+                        capital_tolerance=capital_tolerance,
+                    )
+                    return loan_amortization_table, best_repayment
+                last_negative = (current_remaining, new_monthly_repayment)
+
+            # Case 3: loan paid off too early and capital_ratio has bottomed out at zero
+            # — inject a fixed negative ratio to push the repayment back down.
+            if current_remaining == 0 and capital_ratio == 0:
                 capital_ratio = to_decimal("-0.5", precision="0.000001")
-            # Case 3: other cases — reset capital ratio
+            # Case 4: any other non-convergence — clear the ratio so the next iteration
+            # re-derives it from the fresh remaining capital.
             else:
                 capital_ratio = None
+
+        raise RuntimeError(
+            f"Solver did not converge after {self._SOLVER_MAX_ITERATIONS} iterations"
+        )

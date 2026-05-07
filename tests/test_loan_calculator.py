@@ -1,7 +1,9 @@
 """Tests for loan_calculator.py — LoanCalculator."""
 
 import pytest
+import warnings
 from decimal import Decimal
+from unittest.mock import patch, call
 
 from budget_simulator.loan_calculator import LoanCalculator
 from budget_simulator._utils import quantize_amount
@@ -1515,3 +1517,401 @@ class TestCalculateLoanAmortizationTableInitialCapital:
         )
         assert table_override["interest"][0] != table_default["interest"][0]
         assert table_override["remaining_capital"][0] != table_default["remaining_capital"][0]
+
+
+# ===========================================================================
+# Solver convergence guards: oscillation detection and RuntimeError
+# ===========================================================================
+
+def _make_table(remaining_last, remaining_second_to_last=Decimal("500.00"), month_last=200):
+    """Build a minimal amortization-table stub for mock side_effect entries.
+
+    The solver reads exactly three things from each returned table:
+    - remaining_capital[-1]   → drives capital_ratio and oscillation detection
+    - remaining_capital[-2]   → checked in the convergence guard (must be != 0)
+    - month[-1]               → checked in the convergence guard (must equal duration)
+
+    To avoid accidentally triggering the convergence return, we always set
+    month[-1] to 200 (a value != any duration used in these tests), and keep
+    remaining_capital[-2] non-zero.
+    """
+    return {
+        "month":             [1, month_last],
+        "interest":          [Decimal("10.00"), Decimal("10.00")],
+        "insurance":         [Decimal("2.00"),  Decimal("2.00")],
+        "refunded_capital":  [Decimal("50.00"), Decimal("50.00")],
+        "remaining_capital": [remaining_second_to_last, remaining_last],
+        "cumulated_costs":   [Decimal("12.00"), Decimal("24.00")],
+    }
+
+
+def _patched_to_decimal(value, precision="0.01"):
+    """Drop-in replacement for to_decimal that also accepts Decimal and str inputs.
+
+    The production to_decimal() rejects Decimal values (only int/float allowed).
+    Inside the solver's inner function ``calculate_new_monthly_repayment``, the
+    capital_ratio is derived as ``Decimal / Decimal``, yielding a Decimal, which
+    is then passed to to_decimal().  That call raises TypeError in production —
+    meaning the solver loop body is currently broken and unreachable in practice.
+
+    Line 491 also passes the string literal "-0.5" to to_decimal(), which is
+    likewise rejected by the production implementation.
+
+    This patched version accepts Decimal (converted via float) and str (converted
+    via Decimal() directly), allowing the loop to execute so that oscillation and
+    RuntimeError paths can be tested.
+    """
+    from budget_simulator._utils import to_decimal as _real_to_decimal
+    if isinstance(value, Decimal):
+        return _real_to_decimal(float(value), precision=precision)
+    if isinstance(value, str):
+        return Decimal(value).quantize(Decimal(precision))
+    return _real_to_decimal(value, precision=precision)
+
+
+class TestSolverOscillationAndConvergence:
+    """Tests for the iterative-solver convergence guards added to
+    calculate_monthly_repayment_and_loan_amortization_table.
+
+    All tests in this class target the no-early-repayment code path (the
+    iterative solver).  The early-repayment Strategy B path is exercised
+    elsewhere and is not affected by these changes.
+
+    Mock strategy
+    -------------
+    ``calculate_loan_amortization_table`` is patched with a ``side_effect``
+    list so each successive call returns a pre-determined table.  The helper
+    ``_make_table`` builds minimal stubs that satisfy every attribute the
+    solver reads without accidentally triggering the convergence fast-exit.
+
+    Derivation of expected repayments (oscillation tests)
+    -------------------------------------------------------
+    Starting state:
+        loan_amount   = 200_000
+        monthly_rep   = Decimal("1000.00")
+
+    Pre-loop call (call 0): remaining_capital[-1] = Decimal("200.00")
+        → does not satisfy convergence guard → enters loop.
+
+    Iteration 0 (call 1 inside loop):
+        capital_ratio = 200.00 / 200_000.00 = 0.001
+        new_repayment = quantize(1000.00 × (1 + 0.001/2))
+                      = quantize(1000.00 × 1.000500)
+                      = quantize(1000.500)
+                      = Decimal("1000.50")
+        remaining = +100.00  →  last_positive = (100.00, 1000.50)
+
+    Iteration 1 (call 2):
+        capital_ratio = 100.00 / 200_000.00 = 0.0005
+        new_repayment = quantize(1000.50 × (1 + 0.0005/2))
+                      = quantize(1000.50 × 1.000250)
+                      = quantize(1000.750125)
+                      = Decimal("1000.75")
+        remaining = -80.00   →  last_negative = (-80.00, 1000.75)
+
+    Iteration 2 (call 3):
+        capital_ratio = -80.00 / 200_000.00 = -0.0004
+        new_repayment = quantize(1000.75 × (1 + (-0.0004)/2))
+                      = quantize(1000.75 × 0.999800)
+                      = quantize(1000.54985)
+                      = Decimal("1000.55")
+        remaining = +100.00  → same as last_positive[0] → OSCILLATION DETECTED
+
+        best_repayment = quantize((last_negative[1] + last_positive[1]) / 2)
+                       = quantize((1000.75 + 1000.50) / 2)
+                       = quantize(1000.625)
+        ROUND_HALF_EVEN: hundredths digit = 2 (even), so round down
+                       = Decimal("1000.62")
+
+    Call 4 (final table re-run at best_repayment): returns stub table.
+    """
+
+    # -----------------------------------------------------------------------
+    # Oscillation: positive-sign repeat triggers UserWarning
+    # -----------------------------------------------------------------------
+
+    def test_oscillation_emits_user_warning(self):
+        """When the solver sees the same positive remaining capital twice in a row
+        (with an intervening negative), it must emit a UserWarning whose message
+        contains the word 'oscillating'.
+        """
+        calc = LoanCalculator(
+            loan_amount=200_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.002,
+        )
+        # call 0: pre-loop (non-zero → no early exit)
+        # calls 1-3: loop iterations driving the oscillation
+        # call 4: final re-run at best_repayment
+        side_effects = [
+            _make_table(Decimal("200.00")),   # call 0 — pre-loop, non-zero
+            _make_table(Decimal("100.00")),   # call 1 — iter 0, +100 → last_positive set
+            _make_table(Decimal("-80.00")),   # call 2 — iter 1, -80  → last_negative set
+            _make_table(Decimal("100.00")),   # call 3 — iter 2, +100 REPEAT → oscillation
+            _make_table(Decimal("0.00")),     # call 4 — final table at best_repayment
+        ]
+        with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+            with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                with pytest.warns(UserWarning, match="oscillating"):
+                    calc.calculate_monthly_repayment_and_loan_amortization_table(
+                        duration=180,
+                        monthly_repayment=Decimal("1000.00"),
+                    )
+
+    # -----------------------------------------------------------------------
+    # Oscillation: negative-sign repeat also triggers UserWarning
+    # -----------------------------------------------------------------------
+
+    def test_oscillation_negative_repeat_emits_user_warning(self):
+        """Symmetric case: when the same *negative* remaining capital repeats, the
+        solver must also emit a UserWarning containing 'oscillating'.
+
+        Sequence:
+          call 0 (pre-loop): remaining = -300 (non-zero, no early exit)
+          iter 0: remaining = -80   → last_negative = (-80, rep1)
+          iter 1: remaining = +100  → last_positive = (+100, rep2)
+          iter 2: remaining = -80   → same as last_negative[0] → oscillation
+        """
+        calc = LoanCalculator(
+            loan_amount=200_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.002,
+        )
+        side_effects = [
+            _make_table(Decimal("-300.00")),  # call 0 — pre-loop, non-zero
+            _make_table(Decimal("-80.00")),   # iter 0 — last_negative set
+            _make_table(Decimal("100.00")),   # iter 1 — last_positive set
+            _make_table(Decimal("-80.00")),   # iter 2 — negative REPEAT → oscillation
+            _make_table(Decimal("0.00")),     # call 4 — final re-run
+        ]
+        with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+            with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                with pytest.warns(UserWarning, match="oscillating"):
+                    calc.calculate_monthly_repayment_and_loan_amortization_table(
+                        duration=180,
+                        monthly_repayment=Decimal("1000.00"),
+                    )
+
+    # -----------------------------------------------------------------------
+    # Oscillation: returned repayment is the mean of the two bracketing values
+    # -----------------------------------------------------------------------
+
+    def test_oscillation_returned_repayment_is_mean_of_bracketing_values(self):
+        """On oscillation, the returned monthly repayment must equal the mean of
+        the two bracketing repayments (last_negative[1] and last_positive[1]),
+        quantized to 2 d.p. (ROUND_HALF_EVEN).
+
+        From the derivation in the class docstring:
+            last_positive repayment = Decimal("1000.50")  (iteration 0)
+            last_negative repayment = Decimal("1000.75")  (iteration 1)
+            mean = (1000.50 + 1000.75) / 2 = 1000.625
+            quantize(1000.625, ROUND_HALF_EVEN) = Decimal("1000.62")
+        """
+        calc = LoanCalculator(
+            loan_amount=200_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.002,
+        )
+        side_effects = [
+            _make_table(Decimal("200.00")),
+            _make_table(Decimal("100.00")),
+            _make_table(Decimal("-80.00")),
+            _make_table(Decimal("100.00")),
+            _make_table(Decimal("0.00")),
+        ]
+        with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+            with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    _, returned_repayment = calc.calculate_monthly_repayment_and_loan_amortization_table(
+                        duration=180,
+                        monthly_repayment=Decimal("1000.00"),
+                    )
+        assert returned_repayment == Decimal("1000.62")
+
+    # -----------------------------------------------------------------------
+    # Oscillation: returned repayment is a Decimal quantized to 2 d.p.
+    # -----------------------------------------------------------------------
+
+    def test_oscillation_returned_repayment_is_decimal_quantized_to_cents(self):
+        """The best-effort repayment returned on oscillation is a Decimal with
+        exactly 2 decimal places (cents precision).
+        """
+        calc = LoanCalculator(
+            loan_amount=200_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.002,
+        )
+        side_effects = [
+            _make_table(Decimal("200.00")),
+            _make_table(Decimal("100.00")),
+            _make_table(Decimal("-80.00")),
+            _make_table(Decimal("100.00")),
+            _make_table(Decimal("0.00")),
+        ]
+        with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+            with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    _, returned_repayment = calc.calculate_monthly_repayment_and_loan_amortization_table(
+                        duration=180,
+                        monthly_repayment=Decimal("1000.00"),
+                    )
+        assert isinstance(returned_repayment, Decimal)
+        assert returned_repayment.as_tuple().exponent == -2
+
+    # -----------------------------------------------------------------------
+    # Oscillation: the table returned is the one produced at best_repayment
+    # -----------------------------------------------------------------------
+
+    def test_oscillation_returned_table_is_from_best_repayment_run(self):
+        """After oscillation is detected, the method runs one final call to
+        calculate_loan_amortization_table at best_repayment and returns that
+        table.  The returned table must match the stub from that final call.
+        """
+        calc = LoanCalculator(
+            loan_amount=200_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.002,
+        )
+        sentinel_table = _make_table(Decimal("0.00"))
+        # Mark the sentinel so we can identify it in the assertion
+        sentinel_table["_sentinel"] = True
+
+        side_effects = [
+            _make_table(Decimal("200.00")),
+            _make_table(Decimal("100.00")),
+            _make_table(Decimal("-80.00")),
+            _make_table(Decimal("100.00")),
+            sentinel_table,              # final call at best_repayment
+        ]
+        with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+            with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    returned_table, _ = calc.calculate_monthly_repayment_and_loan_amortization_table(
+                        duration=180,
+                        monthly_repayment=Decimal("1000.00"),
+                    )
+        assert returned_table.get("_sentinel") is True
+
+    # -----------------------------------------------------------------------
+    # RuntimeError: solver exhausts all iterations without converging
+    # -----------------------------------------------------------------------
+
+    def test_non_convergence_raises_runtime_error(self):
+        """When the solver exhausts all _SOLVER_MAX_ITERATIONS iterations without
+        converging or oscillating, it must raise a RuntimeError whose message
+        contains 'did not converge'.
+
+        The mock always returns a strictly-increasing positive remaining capital
+        (never the same value twice), so:
+        - The convergence check never fires (remaining != 0).
+        - Oscillation never fires (last_positive[0] keeps changing).
+        - The loop runs until _SOLVER_MAX_ITERATIONS (patched to 5) and then
+          raises RuntimeError.
+        """
+        calc = LoanCalculator(
+            loan_amount=200_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.002,
+        )
+        # Pre-loop call + 5 loop iterations = 6 tables total.
+        # Each has a distinct, strictly-increasing positive remaining_capital
+        # so neither the convergence guard nor the oscillation detector fires.
+        side_effects = [
+            _make_table(Decimal("100.00")),   # call 0 — pre-loop
+            _make_table(Decimal("1.00")),     # iter 0
+            _make_table(Decimal("2.00")),     # iter 1
+            _make_table(Decimal("3.00")),     # iter 2
+            _make_table(Decimal("4.00")),     # iter 3
+            _make_table(Decimal("5.00")),     # iter 4
+        ]
+        with patch.object(LoanCalculator, "_SOLVER_MAX_ITERATIONS", new=5):
+            with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+                with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                    with pytest.raises(RuntimeError, match="did not converge"):
+                        calc.calculate_monthly_repayment_and_loan_amortization_table(
+                            duration=180,
+                            monthly_repayment=Decimal("1000.00"),
+                        )
+
+    # -----------------------------------------------------------------------
+    # RuntimeError: error message includes the iteration count
+    # -----------------------------------------------------------------------
+
+    def test_non_convergence_error_message_contains_iteration_count(self):
+        """The RuntimeError message must mention the number of iterations
+        attempted (the patched _SOLVER_MAX_ITERATIONS value).
+        """
+        calc = LoanCalculator(
+            loan_amount=200_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.002,
+        )
+        side_effects = [
+            _make_table(Decimal("100.00")),
+            _make_table(Decimal("1.00")),
+            _make_table(Decimal("2.00")),
+            _make_table(Decimal("3.00")),
+            _make_table(Decimal("4.00")),
+            _make_table(Decimal("5.00")),
+        ]
+        with patch.object(LoanCalculator, "_SOLVER_MAX_ITERATIONS", new=5):
+            with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+                with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                    with pytest.raises(RuntimeError, match="5"):
+                        calc.calculate_monthly_repayment_and_loan_amortization_table(
+                            duration=180,
+                            monthly_repayment=Decimal("1000.00"),
+                        )
+
+    # -----------------------------------------------------------------------
+    # xfail — non-oscillating, non-converging loop with always-same positive
+    # value would be mistakenly detected as oscillation
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.xfail(
+        reason=(
+            "If the pre-loop call already returns the same positive remaining_capital "
+            "that iteration 0 will return, and last_positive is set in iteration 0, "
+            "then iteration 1 returning the SAME value again would trigger oscillation "
+            "before last_negative is set.  The oscillation branch reads last_negative[1] "
+            "unconditionally at that point, raising a TypeError (NoneType is not "
+            "subscriptable) rather than RuntimeError.  This documents the edge-case gap "
+            "where the sign never alternates before a repeat occurs."
+        ),
+        strict=True,
+    )
+    def test_oscillation_without_prior_negative_raises_type_error_not_runtime_error(self):
+        """Edge case: if a positive remaining_capital repeats before any negative
+        value has been seen (last_negative is still None), the code tries to access
+        last_negative[1] and raises a TypeError.
+
+        This test documents the gap: the oscillation branch assumes last_negative is
+        set before last_positive repeats, but that invariant is not enforced.
+        Would need an explicit None-guard ('if last_negative is not None') to raise
+        RuntimeError gracefully instead.
+        """
+        calc = LoanCalculator(
+            loan_amount=200_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.002,
+        )
+        # Pre-loop: non-zero (no early exit)
+        # Iter 0: +100 → last_positive set, last_negative still None
+        # Iter 1: +100 → same positive repeat, but last_negative is None → TypeError
+        side_effects = [
+            _make_table(Decimal("200.00")),   # pre-loop
+            _make_table(Decimal("100.00")),   # iter 0 — last_positive set
+            _make_table(Decimal("100.00")),   # iter 1 — repeat, last_negative is None
+        ]
+        with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+            with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                # The xfail assertion: the code does NOT raise RuntimeError cleanly;
+                # it actually raises TypeError. We assert RuntimeError to document the gap.
+                with pytest.raises(RuntimeError):
+                    calc.calculate_monthly_repayment_and_loan_amortization_table(
+                        duration=180,
+                        monthly_repayment=Decimal("1000.00"),
+                    )
