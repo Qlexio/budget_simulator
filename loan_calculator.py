@@ -36,7 +36,7 @@ class LoanCalculator:
             monthly_repayment: Optional known monthly repayment. Defaults to 0
                 (use ``calculate_monthly_repayment_and_loan_amortization_table``
                 to solve for it).
-            insured_number: Number of insured persons (1 or 2). Defaults to 1.
+            insured_number: Number of insured persons (positive integer). Defaults to 1.
             insurance_coverage: Coverage ratio(s) per insured person (0–1).
                 Pass a single value or a list. Defaults to 1 (full coverage).
         """
