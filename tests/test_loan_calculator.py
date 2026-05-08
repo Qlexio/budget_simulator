@@ -804,6 +804,52 @@ class TestComputeMonthlyInsurance:
         assert isinstance(result, Decimal)
         assert abs(result - Decimal("25.0")) <= Decimal("0.01")
 
+    def test_two_insured_asymmetric_rates_and_coverages_sum_is_correct(self):
+        """Asymmetric per-person rates and coverages are each applied independently."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=[0.003, 0.002],
+            insured_number=2,
+            insurance_coverage=[1.0, 0.5],
+        )
+        remaining_capital = Decimal("100000.00")
+        result = calc._compute_monthly_insurance(remaining_capital)
+        # Person A: 100000 × (0.003 × 1.0) / 12 = 25.0
+        # Person B: 100000 × (0.002 × 0.5) / 12 ≈ 8.33333…
+        # Total ≈ 33.33333…
+        person_a_expected = remaining_capital * (Decimal("0.003") * Decimal("1.0")) / Decimal("12")
+        person_b_expected = remaining_capital * (Decimal("0.002") * Decimal("0.5")) / Decimal("12")
+        expected_total = person_a_expected + person_b_expected
+        assert abs(result - expected_total) <= Decimal("0.00001")
+
+    def test_two_insured_list_rate_per_person_contribution_breakdown(self):
+        """Each insured person's contribution is summed to form the total insurance cost."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=[0.003, 0.002],
+            insured_number=2,
+            insurance_coverage=[1.0, 0.5],
+        )
+        remaining_capital = Decimal("100000.00")
+        result = calc._compute_monthly_insurance(remaining_capital)
+        person_a_expected = remaining_capital * (Decimal("0.003") * Decimal("1.0")) / Decimal("12")
+        person_b_expected = remaining_capital * (Decimal("0.002") * Decimal("0.5")) / Decimal("12")
+        assert result == person_a_expected + person_b_expected
+
+    def test_constructor_stores_both_rates_when_list_passed(self):
+        """When a 2-element list is passed, both rates are stored in annual_insurance_rate."""
+        calc = LoanCalculator(
+            loan_amount=100_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=[0.003, 0.002],
+            insured_number=2,
+        )
+        assert len(calc.annual_insurance_rate) == 2
+        assert calc.annual_insurance_rate[0] == Decimal("0.003").quantize(Decimal("0.00001"))
+        assert calc.annual_insurance_rate[1] == Decimal("0.002").quantize(Decimal("0.00001"))
+
 
 # ===========================================================================
 # calculate_loan_amortization_table
@@ -914,7 +960,7 @@ class TestCalculateLoanAmortizationTable:
         assert table["cumulated_costs"][0] == Decimal("150.00")
 
     # -----------------------------------------------------------------------
-    # GREEN — termination behaviour
+    # GREEN — termination behavior
     # -----------------------------------------------------------------------
 
     def test_table_terminates_before_duration_when_repayment_is_high(self, calc_single):
