@@ -1866,52 +1866,26 @@ class TestSolverOscillationAndConvergence:
                             monthly_repayment=Decimal("1000.00"),
                         )
 
-    # -----------------------------------------------------------------------
-    # xfail — non-oscillating, non-converging loop with always-same positive
-    # value would be mistakenly detected as oscillation
-    # -----------------------------------------------------------------------
-
-    @pytest.mark.xfail(
-        reason=(
-            "If the pre-loop call already returns the same positive remaining_capital "
-            "that iteration 0 will return, and last_positive is set in iteration 0, "
-            "then iteration 1 returning the SAME value again would trigger oscillation "
-            "before last_negative is set.  The oscillation branch reads last_negative[1] "
-            "unconditionally at that point, raising a TypeError (NoneType is not "
-            "subscriptable) rather than RuntimeError.  This documents the edge-case gap "
-            "where the sign never alternates before a repeat occurs."
-        ),
-        strict=True,
-    )
-    def test_oscillation_without_prior_negative_raises_type_error_not_runtime_error(self):
-        """Edge case: if a positive remaining_capital repeats before any negative
-        value has been seen (last_negative is still None), the code tries to access
-        last_negative[1] and raises a TypeError.
-
-        This test documents the gap: the oscillation branch assumes last_negative is
-        set before last_positive repeats, but that invariant is not enforced.
-        Would need an explicit None-guard ('if last_negative is not None') to raise
-        RuntimeError gracefully instead.
+    def test_positive_repeat_without_prior_negative_raises_runtime_error(self):
+        """When a positive remaining_capital repeats before any negative value has been
+        seen (last_negative is still None), the oscillation branch must NOT fire
+        (it requires both brackets). The loop continues and eventually raises
+        RuntimeError after _SOLVER_MAX_ITERATIONS.
         """
         calc = LoanCalculator(
             loan_amount=200_000,
             annual_interest_rate=0.015,
             annual_insurance_rate=0.002,
         )
-        # Pre-loop: non-zero (no early exit)
-        # Iter 0: +100 → last_positive set, last_negative still None
-        # Iter 1: +100 → same positive repeat, but last_negative is None → TypeError
-        side_effects = [
-            _make_table(Decimal("200.00")),   # pre-loop
-            _make_table(Decimal("100.00")),   # iter 0 — last_positive set
-            _make_table(Decimal("100.00")),   # iter 1 — repeat, last_negative is None
-        ]
-        with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
-            with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
-                # The xfail assertion: the code does NOT raise RuntimeError cleanly;
-                # it actually raises TypeError. We assert RuntimeError to document the gap.
-                with pytest.raises(RuntimeError):
-                    calc.calculate_monthly_repayment_and_loan_amortization_table(
-                        duration=180,
-                        monthly_repayment=Decimal("1000.00"),
-                    )
+        # Pre-loop + 3 iterations all returning the same positive value.
+        # last_negative stays None throughout, so oscillation is never triggered.
+        # With _SOLVER_MAX_ITERATIONS=3 the loop exhausts and raises RuntimeError.
+        side_effects = [_make_table(Decimal("100.00"))] * 4  # pre-loop + 3 iters
+        with patch.object(LoanCalculator, "_SOLVER_MAX_ITERATIONS", new=3):
+            with patch("budget_simulator.loan_calculator.to_decimal", side_effect=_patched_to_decimal):
+                with patch.object(calc, "calculate_loan_amortization_table", side_effect=side_effects):
+                    with pytest.raises(RuntimeError, match="3"):
+                        calc.calculate_monthly_repayment_and_loan_amortization_table(
+                            duration=180,
+                            monthly_repayment=Decimal("1000.00"),
+                        )
