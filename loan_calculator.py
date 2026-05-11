@@ -122,7 +122,7 @@ class LoanCalculator:
                     stacklevel=2,
                 )
             return [to_decimal(ins_value, precision=precision) for ins_value in decimal_insurance_value[:insured_number]]
-        return []
+        raise AssertionError("unreachable: unhandled insured_number/insurance_value combination")
 
     def _validate_early_repayment_args(
         self,

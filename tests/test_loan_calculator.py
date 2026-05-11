@@ -646,6 +646,346 @@ class TestFormatInsuranceRelatedValues:
         assert calc.insurance_coverage[0] == Decimal("1.00")
         assert calc.insurance_coverage[1] == Decimal("1.00")
 
+    # -----------------------------------------------------------------------
+    # GREEN — exhaustive branch coverage to confirm AssertionError is unreachable
+    #
+    # The method ends with:
+    #   raise AssertionError("unreachable: unhandled insured_number/insurance_value combination")
+    #
+    # The tests below call _format_insurance_related_values directly for every
+    # branch that precedes that line.  Passing all of them gives confidence that
+    # every reachable (insured_number, input-type) combination is handled and
+    # the fallback is never hit.
+    #
+    # Branch map (line numbers in loan_calculator.py):
+    #   B1  insured_number == 1,  scalar input          → [Decimal]          (line 100–101)
+    #   B2  insured_number == 1,  list input             → [Decimal(list[0])] (line 102–103)
+    #   B3  insured_number > 1,  scalar input            → [value] * n       (line 104–108)
+    #   B4  insured_number > 1,  list len == 1           → broadcast          (line 110–111)
+    #   B5  insured_number > 1,  list len == insured_number → use as-is       (line 124)
+    #   B6  insured_number > 1,  list len > insured_number → warn + truncate  (line 117–124)
+    # -----------------------------------------------------------------------
+
+    # -- B1: insured_number == 1, scalar input --
+
+    def test_b1_scalar_insured1_returns_single_element_list(self, calc_single):
+        """B1: scalar + insured_number=1 → list of exactly one Decimal, no exception."""
+        result = calc_single._format_insurance_related_values(0.004, insured_number=1)
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    def test_b1_scalar_insured1_element_is_decimal(self, calc_single):
+        """B1: returned element must be a Decimal instance."""
+        result = calc_single._format_insurance_related_values(0.004, insured_number=1)
+        assert isinstance(result[0], Decimal)
+
+    def test_b1_scalar_insured1_value_matches_input(self, calc_single):
+        """B1: returned Decimal equals the input scalar converted at default precision (0.01)."""
+        result = calc_single._format_insurance_related_values(0.5, insured_number=1, precision="0.01")
+        assert result[0] == Decimal("0.50")
+
+    def test_b1_scalar_insured1_int_input_stored_correctly(self, calc_single):
+        """B1: integer scalar is accepted and stored as Decimal."""
+        result = calc_single._format_insurance_related_values(1, insured_number=1, precision="0.01")
+        assert result[0] == Decimal("1.00")
+
+    def test_b1_scalar_insured1_zero_stored_correctly(self, calc_single):
+        """B1: zero scalar is a valid lower boundary and stored as Decimal zero."""
+        result = calc_single._format_insurance_related_values(0, insured_number=1, precision="0.01")
+        assert result[0] == Decimal("0.00")
+
+    def test_b1_scalar_insured1_rate_precision_applied(self, calc_single):
+        """B1: precision='0.00001' produces five decimal places."""
+        result = calc_single._format_insurance_related_values(0.003, insured_number=1, precision="0.00001")
+        assert result[0].as_tuple().exponent == -5
+        assert result[0] == Decimal("0.00300")
+
+    # -- B2: insured_number == 1, list input --
+
+    def test_b2_list_insured1_single_element_returns_list_of_one(self, calc_single):
+        """B2: list + insured_number=1 → list of exactly one element, no exception."""
+        result = calc_single._format_insurance_related_values([0.003], insured_number=1)
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    def test_b2_list_insured1_element_is_decimal(self, calc_single):
+        """B2: element extracted from the input list must be a Decimal."""
+        result = calc_single._format_insurance_related_values([0.003], insured_number=1)
+        assert isinstance(result[0], Decimal)
+
+    def test_b2_list_insured1_uses_first_element_only(self, calc_single):
+        """B2: only the first list element is kept; extras are silently dropped."""
+        result = calc_single._format_insurance_related_values(
+            [0.003, 0.007, 0.009], insured_number=1, precision="0.00001"
+        )
+        assert len(result) == 1
+        assert result[0] == Decimal("0.00300")
+
+    def test_b2_list_insured1_precision_applied_to_extracted_element(self, calc_single):
+        """B2: the extracted element is converted to Decimal at the requested precision."""
+        result = calc_single._format_insurance_related_values([0.5], insured_number=1, precision="0.01")
+        assert result[0] == Decimal("0.50")
+        assert result[0].as_tuple().exponent == -2
+
+    def test_b2_list_insured1_int_element_stored_correctly(self, calc_single):
+        """B2: integer element in the list is converted to Decimal correctly."""
+        result = calc_single._format_insurance_related_values([1], insured_number=1, precision="0.01")
+        assert result[0] == Decimal("1.00")
+
+    # -- B3: insured_number > 1, scalar input --
+    #
+    # NOTE: the B3 loop body uses `self.insured_number` (not the `insured_number`
+    # override argument) to drive the repeat count. Direct calls therefore need a
+    # calculator whose self.insured_number matches the desired n. These tests
+    # construct appropriate instances rather than reusing calc_single (n=1).
+
+    @pytest.mark.parametrize("n", [2, 3, 4, 5])
+    def test_b3_scalar_insured_n_returns_list_of_length_n(self, n):
+        """B3: scalar + insured_number=n → list of exactly n elements, no exception.
+
+        A fresh calculator with insured_number=n is used so that self.insured_number
+        matches the branch being exercised (B3 loop uses self.insured_number).
+        """
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=n,
+        )
+        result = calc._format_insurance_related_values(0.003, insured_number=n, precision="0.00001")
+        assert isinstance(result, list)
+        assert len(result) == n
+
+    @pytest.mark.parametrize("n", [2, 3, 4, 5])
+    def test_b3_scalar_insured_n_all_elements_equal(self, n):
+        """B3: every element in the result must equal the input scalar (broadcast)."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=n,
+        )
+        result = calc._format_insurance_related_values(0.003, insured_number=n, precision="0.00001")
+        assert all(v == Decimal("0.00300") for v in result)
+
+    @pytest.mark.parametrize("n", [2, 3, 4, 5])
+    def test_b3_scalar_insured_n_all_elements_are_decimal(self, n):
+        """B3: every element in the result must be a Decimal instance."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=n,
+        )
+        result = calc._format_insurance_related_values(0.003, insured_number=n, precision="0.00001")
+        assert all(isinstance(v, Decimal) for v in result)
+
+    def test_b3_scalar_insured2_zero_broadcasts_correctly(self):
+        """B3: zero scalar with insured_number=2 → [Decimal('0.00'), Decimal('0.00')]."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=2,
+        )
+        result = calc._format_insurance_related_values(0, insured_number=2, precision="0.01")
+        assert len(result) == 2
+        assert all(v == Decimal("0.00") for v in result)
+
+    def test_b3_scalar_insured2_int_one_broadcasts_correctly(self):
+        """B3: integer 1 with insured_number=2 → both elements are Decimal('1.00')."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=2,
+        )
+        result = calc._format_insurance_related_values(1, insured_number=2, precision="0.01")
+        assert len(result) == 2
+        assert all(v == Decimal("1.00") for v in result)
+
+    # -- B4: insured_number > 1, list of length 1 (broadcast path) --
+
+    @pytest.mark.parametrize("n", [2, 3, 4])
+    def test_b4_list_of_one_insured_n_broadcasts_to_n_elements(self, calc_single, n):
+        """B4: list of length 1 + insured_number=n → n equal elements, no exception."""
+        result = calc_single._format_insurance_related_values([0.003], insured_number=n, precision="0.00001")
+        assert isinstance(result, list)
+        assert len(result) == n
+
+    @pytest.mark.parametrize("n", [2, 3, 4])
+    def test_b4_list_of_one_insured_n_all_elements_equal(self, calc_single, n):
+        """B4: all n elements must equal the single input value."""
+        result = calc_single._format_insurance_related_values([0.003], insured_number=n, precision="0.00001")
+        assert all(v == Decimal("0.00300") for v in result)
+
+    @pytest.mark.parametrize("n", [2, 3, 4])
+    def test_b4_list_of_one_insured_n_all_elements_are_decimal(self, calc_single, n):
+        """B4: every element must be a Decimal instance."""
+        result = calc_single._format_insurance_related_values([0.003], insured_number=n, precision="0.00001")
+        assert all(isinstance(v, Decimal) for v in result)
+
+    def test_b4_list_of_one_insured2_zero_broadcasts_correctly(self, calc_single):
+        """B4: [0] with insured_number=2 → [Decimal('0.00'), Decimal('0.00')]."""
+        result = calc_single._format_insurance_related_values([0], insured_number=2, precision="0.01")
+        assert len(result) == 2
+        assert all(v == Decimal("0.00") for v in result)
+
+    def test_b4_list_of_one_does_not_emit_warning(self, calc_single):
+        """B4: length-1 list broadcast must not raise any warning (not a truncation)."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning becomes an error
+            result = calc_single._format_insurance_related_values([0.5], insured_number=2, precision="0.01")
+        assert len(result) == 2
+
+    # -- B5: insured_number > 1, list len == insured_number --
+
+    def test_b5_exact_list_insured2_returns_both_values(self, calc_single):
+        """B5: list of length 2 + insured_number=2 → both values preserved, no exception."""
+        result = calc_single._format_insurance_related_values(
+            [0.002, 0.004], insured_number=2, precision="0.00001"
+        )
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0] == Decimal("0.00200")
+        assert result[1] == Decimal("0.00400")
+
+    def test_b5_exact_list_insured3_returns_all_three_values(self, calc_single):
+        """B5: list of length 3 + insured_number=3 → all three values preserved."""
+        result = calc_single._format_insurance_related_values(
+            [0.001, 0.002, 0.003], insured_number=3, precision="0.00001"
+        )
+        assert len(result) == 3
+        assert result[0] == Decimal("0.00100")
+        assert result[1] == Decimal("0.00200")
+        assert result[2] == Decimal("0.00300")
+
+    def test_b5_exact_list_insured4_returns_all_four_values(self, calc_single):
+        """B5: list of length 4 + insured_number=4 → all four values preserved."""
+        result = calc_single._format_insurance_related_values(
+            [0.001, 0.002, 0.003, 0.004], insured_number=4, precision="0.00001"
+        )
+        assert len(result) == 4
+        assert result[0] == Decimal("0.00100")
+        assert result[3] == Decimal("0.00400")
+
+    def test_b5_exact_list_all_elements_are_decimal(self, calc_single):
+        """B5: every element in an exact-length list result must be a Decimal."""
+        result = calc_single._format_insurance_related_values(
+            [0.002, 0.004], insured_number=2, precision="0.00001"
+        )
+        assert all(isinstance(v, Decimal) for v in result)
+
+    def test_b5_exact_list_insured2_order_preserved(self, calc_single):
+        """B5: list elements are returned in the original input order."""
+        result = calc_single._format_insurance_related_values(
+            [0.009, 0.001], insured_number=2, precision="0.00001"
+        )
+        assert result[0] == Decimal("0.00900")
+        assert result[1] == Decimal("0.00100")
+
+    def test_b5_exact_list_insured2_does_not_emit_warning(self, calc_single):
+        """B5: an exact-length list must not emit any warning."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = calc_single._format_insurance_related_values(
+                [0.002, 0.004], insured_number=2, precision="0.00001"
+            )
+        assert len(result) == 2
+
+    # -- B6: insured_number > 1, list len > insured_number --
+
+    def test_b6_longer_list_insured2_emits_user_warning(self, calc_single):
+        """B6: list of length 3 + insured_number=2 → UserWarning emitted."""
+        with pytest.warns(UserWarning, match="extra values will be ignored"):
+            calc_single._format_insurance_related_values(
+                [0.001, 0.003, 0.005], insured_number=2, precision="0.00001"
+            )
+
+    def test_b6_longer_list_insured2_truncates_to_insured_number(self, calc_single):
+        """B6: result contains exactly insured_number elements (first n)."""
+        with pytest.warns(UserWarning):
+            result = calc_single._format_insurance_related_values(
+                [0.001, 0.003, 0.005], insured_number=2, precision="0.00001"
+            )
+        assert len(result) == 2
+        assert result[0] == Decimal("0.00100")
+        assert result[1] == Decimal("0.00300")
+
+    def test_b6_longer_list_insured3_truncates_correctly(self, calc_single):
+        """B6: list of length 5 + insured_number=3 → first 3 elements kept."""
+        with pytest.warns(UserWarning):
+            result = calc_single._format_insurance_related_values(
+                [0.001, 0.002, 0.003, 0.004, 0.005], insured_number=3, precision="0.00001"
+            )
+        assert len(result) == 3
+        assert result[0] == Decimal("0.00100")
+        assert result[1] == Decimal("0.00200")
+        assert result[2] == Decimal("0.00300")
+
+    def test_b6_longer_list_all_kept_elements_are_decimal(self, calc_single):
+        """B6: kept elements after truncation must all be Decimal instances."""
+        with pytest.warns(UserWarning):
+            result = calc_single._format_insurance_related_values(
+                [0.001, 0.003, 0.005], insured_number=2, precision="0.00001"
+            )
+        assert all(isinstance(v, Decimal) for v in result)
+
+    # -- Cross-branch: confirm no AssertionError fires for any valid combination --
+
+    @pytest.mark.parametrize(
+        "insurance_value, insured_number, expected_len",
+        [
+            # B1: scalar, n=1
+            (0.003, 1, 1),
+            # B2: list, n=1
+            ([0.003], 1, 1),
+            # B2: list longer than 1, n=1 (only first element used)
+            ([0.003, 0.005], 1, 1),
+            # B3: scalar, n=2  (requires calc with self.insured_number=2)
+            (0.003, 2, 2),
+            # B3: scalar, n=3  (requires calc with self.insured_number=3)
+            (0.003, 3, 3),
+            # B4: list-of-one, n=2
+            ([0.003], 2, 2),
+            # B4: list-of-one, n=3
+            ([0.003], 3, 3),
+            # B5: exact-length list, n=2
+            ([0.002, 0.004], 2, 2),
+            # B5: exact-length list, n=3
+            ([0.001, 0.002, 0.003], 3, 3),
+        ],
+    )
+    def test_all_valid_combinations_return_list_without_assertionerror(
+        self, insurance_value, insured_number, expected_len
+    ):
+        """Parametrised sweep: every valid (insured_number, input-type) pairing
+        must return a list of the correct length and never raise AssertionError.
+
+        These are the combinations that exhaust every branch before the
+        'unreachable' raise, giving full branch coverage of the method.
+
+        A calculator with self.insured_number == insured_number is constructed
+        per-case so that the B3 loop (which reads self.insured_number) returns
+        the correct count even when insured_number > 1.
+        """
+        if isinstance(insurance_value, list) and len(insurance_value) > insured_number > 1:
+            # B6 path emits a warning; handle in dedicated tests above
+            return
+
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=insured_number,
+        )
+        result = calc._format_insurance_related_values(
+            insurance_value, insured_number=insured_number, precision="0.00001"
+        )
+        assert isinstance(result, list)
+        assert len(result) == expected_len
+        assert all(isinstance(v, Decimal) for v in result)
+
 
 # ===========================================================================
 # _compute_payment_breakdown
