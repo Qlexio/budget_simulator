@@ -1,6 +1,6 @@
 import warnings
 from decimal import Decimal as _Decimal
-from typing import Optional, Union, cast
+from typing import Optional, Union
 from ._utils import quantize_amount, to_decimal
 
 
@@ -56,7 +56,7 @@ class LoanCalculator:
 
         self.insured_number = insured_number
         self.annual_insurance_rate = self._format_insurance_related_values(annual_insurance_rate, precision="0.00001")
-        self.insurance_coverage = self._format_insurance_related_values(cast(Union[int, float], insurance_coverage))
+        self.insurance_coverage = self._format_insurance_related_values(insurance_coverage)
 
         for rate in self.annual_insurance_rate:
             if rate < 0:

@@ -553,6 +553,99 @@ class TestFormatInsuranceRelatedValues:
         assert result[0] == result[1]
         assert result[0] == Decimal("0.00300")
 
+    # -----------------------------------------------------------------------
+    # GREEN — insurance_coverage list input via constructor (cast removal coverage)
+    # These tests confirm that passing a list directly as insurance_coverage
+    # to the constructor reaches _format_insurance_related_values correctly,
+    # now that the cast(Union[int, float], insurance_coverage) no-op was removed.
+    # -----------------------------------------------------------------------
+
+    def test_single_insured_list_coverage_length_is_one(self):
+        """Single insured with list coverage → self.insurance_coverage has exactly 1 element."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=1,
+            insurance_coverage=[0.75],
+        )
+        assert len(calc.insurance_coverage) == 1
+
+    def test_single_insured_list_coverage_value_is_correct(self):
+        """Single insured with list coverage [0.75] → stored as Decimal('0.75')."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=1,
+            insurance_coverage=[0.75],
+        )
+        assert calc.insurance_coverage[0] == Decimal("0.75")
+
+    def test_single_insured_list_coverage_element_is_decimal(self):
+        """Single insured with list coverage → stored element is a Decimal instance."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=1,
+            insurance_coverage=[0.75],
+        )
+        assert isinstance(calc.insurance_coverage[0], Decimal)
+
+    def test_single_insured_list_coverage_extra_elements_dropped(self):
+        """Single insured with list coverage [0.6, 0.9] → only first element kept."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=1,
+            insurance_coverage=[0.6, 0.9],
+        )
+        assert len(calc.insurance_coverage) == 1
+        assert calc.insurance_coverage[0] == Decimal("0.60")
+
+    def test_single_insured_list_coverage_int_element_stored_correctly(self):
+        """Single insured with list coverage [1] (int element) → Decimal('1.00')."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=1,
+            insurance_coverage=[1],
+        )
+        assert len(calc.insurance_coverage) == 1
+        assert calc.insurance_coverage[0] == Decimal("1.00")
+        assert isinstance(calc.insurance_coverage[0], Decimal)
+
+    def test_two_insured_list_coverage_int_elements_stored_correctly(self):
+        """Two insured with list coverage [1, 0] (int elements) → [Decimal('1.00'), Decimal('0.00')]."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=2,
+            insurance_coverage=[1, 0],
+        )
+        assert len(calc.insurance_coverage) == 2
+        assert calc.insurance_coverage[0] == Decimal("1.00")
+        assert calc.insurance_coverage[1] == Decimal("0.00")
+        for item in calc.insurance_coverage:
+            assert isinstance(item, Decimal)
+
+    def test_two_insured_list_coverage_int_one_broadcasts(self):
+        """Two insured with list coverage [1] (int, length 1) → broadcasts to both persons."""
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=2,
+            insurance_coverage=[1],
+        )
+        assert len(calc.insurance_coverage) == 2
+        assert calc.insurance_coverage[0] == Decimal("1.00")
+        assert calc.insurance_coverage[1] == Decimal("1.00")
+
 
 # ===========================================================================
 # _compute_payment_breakdown
