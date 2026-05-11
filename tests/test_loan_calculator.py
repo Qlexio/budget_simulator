@@ -2114,6 +2114,59 @@ class TestCalculateMonthlyRepaymentAndLoanAmortizationTable:
                 f"{costs[i]} > {costs[i+1]}"
             )
 
+    def test_strategy_b_last_phase1_row_has_correct_month(self, calc_single):
+        """Strategy B: the last Phase 1 row (index M-1) carries month number M.
+
+        With early_repayment_month=60, Phase 1 spans indices 0..59.  The row at
+        index 59 must have month==60 — i.e. the merge does not mis-number the
+        final Phase 1 entry (GitHub issue #10).
+        """
+        M = 60
+        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=DURATION,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=M,
+        )
+        assert table["month"][M - 1] == M, (
+            f"Expected last Phase 1 row (index {M - 1}) to have month={M}, "
+            f"got {table['month'][M - 1]}"
+        )
+
+    def test_strategy_b_first_phase2_row_has_correct_month(self, calc_single):
+        """Strategy B: the first Phase 2 row (index M) carries month number M+1.
+
+        With early_repayment_month=60, Phase 2 starts at index 60.  That row
+        must have month==61 — confirming there is no gap or duplicate at the
+        phase boundary (GitHub issue #10).
+        """
+        M = 60
+        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=DURATION,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=M,
+        )
+        assert table["month"][M] == M + 1, (
+            f"Expected first Phase 2 row (index {M}) to have month={M + 1}, "
+            f"got {table['month'][M]}"
+        )
+
+    def test_strategy_b_month_sequence_is_contiguous(self, calc_single):
+        """Strategy B: all month values form a contiguous sequence 1..DURATION.
+
+        The merged table must contain every integer from 1 to DURATION exactly
+        once and in order — no duplicates, no gaps, no off-by-one at the
+        Phase 1→Phase 2 boundary (GitHub issue #10).
+        """
+        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=DURATION,
+            monthly_repayment=REPAYMENT_HIGH,
+            early_repayment=20_000,
+            early_repayment_month=60,
+        )
+        assert table["month"] == list(range(1, DURATION + 1))
+
     def test_strategy_b_phase1_rows_match_no_early_repayment_baseline(self, calc_single):
         """Strategy B: the first 60 rows of the merged table are identical to a plain
         60-month amortization table at REPAYMENT_HIGH (no early repayment).
