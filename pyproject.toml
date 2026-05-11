@@ -4,16 +4,18 @@ version = "0.1.0"
 description = "French mortgage analysis: amortization tables and early repayment strategies"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "numpy",
-    "pandas",
-]
+dependencies = []
 
 [dependency-groups]
 dev = [
     "pytest",
     "pytest-mock",
     "pytest-cov",
+]
+notebook = [
+    "numpy",
+    "pandas",
+    "jupyterlab",
 ]
 
 [tool.setuptools]
