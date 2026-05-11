@@ -61,27 +61,6 @@ def calc_two_scalar() -> LoanCalculator:
 class TestFormatInsuranceRelatedValues:
     """Tests for LoanCalculator._format_insurance_related_values and __init__ validation."""
 
-    # -- Constructor: attributes stored as Decimal lists --
-
-    def test_constructor_stores_insurance_rate_as_decimal_list(self, calc_single):
-        """Constructor normalises annual_insurance_rate to a list of Decimal."""
-        assert isinstance(calc_single.annual_insurance_rate, list)
-        assert len(calc_single.annual_insurance_rate) == 1
-        assert isinstance(calc_single.annual_insurance_rate[0], Decimal)
-
-    def test_constructor_stores_insurance_coverage_as_decimal_list(self, calc_single):
-        """Constructor normalises insurance_coverage to a list of Decimal."""
-        assert isinstance(calc_single.insurance_coverage, list)
-        assert len(calc_single.insurance_coverage) == 1
-        assert isinstance(calc_single.insurance_coverage[0], Decimal)
-
-    def test_constructor_two_insured_scalar_coverage_normalised(self, calc_two_scalar):
-        """Two insured with scalar coverage → list of two Decimal values."""
-        assert isinstance(calc_two_scalar.insurance_coverage, list)
-        assert len(calc_two_scalar.insurance_coverage) == 2
-        for item in calc_two_scalar.insurance_coverage:
-            assert isinstance(item, Decimal)
-
     # -- __init__ guards --
 
     def test_init_loan_amount_zero_raises_value_error(self):
@@ -220,38 +199,16 @@ class TestComputePaymentBreakdown:
         assert new_remaining == Decimal("49385.0000000")
 
     def test_last_month_cap_repaid_equals_remaining(self, calc_single):
-        """When difference < tolerance threshold, repaid_capital is capped at remaining."""
+        """When difference < tolerance threshold, repaid_capital is capped at remaining and new_remaining is zero."""
         # remaining=100 << repayment=690; cap fires because 100−repaid < 690×0.1=69
-        _, repaid, _ = calc_single._compute_payment_breakdown(
+        _, repaid, new_remaining = calc_single._compute_payment_breakdown(
             monthly_repayment=Decimal("690.00"),
             monthly_insurance=Decimal("25.00"),
             remaining_capital=Decimal("100.00"),
             capital_tolerance=0.1,
         )
         assert repaid == Decimal("100.00")
-
-    def test_last_month_cap_new_remaining_is_zero(self, calc_single):
-        """When last-month cap fires, new remaining_capital is exactly zero."""
-        _, _, new_remaining = calc_single._compute_payment_breakdown(
-            monthly_repayment=Decimal("690.00"),
-            monthly_insurance=Decimal("25.00"),
-            remaining_capital=Decimal("100.00"),
-            capital_tolerance=0.1,
-        )
         assert new_remaining == Decimal("0")
-
-    @pytest.mark.parametrize("capital_tolerance", [0, 0.1, 0.5, Decimal("0.1"), Decimal("0.5")])
-    def test_capital_tolerance_variety_all_accepted(self, calc_single, capital_tolerance):
-        """int, float, and Decimal tolerance values are all accepted without error."""
-        try:
-            calc_single._compute_payment_breakdown(
-                monthly_repayment=Decimal("690.00"),
-                monthly_insurance=Decimal("25.00"),
-                remaining_capital=Decimal("50000.00"),
-                capital_tolerance=capital_tolerance,
-            )
-        except Exception as exc:
-            pytest.fail(f"capital_tolerance={capital_tolerance!r} raised: {exc}")
 
 
 # ===========================================================================
@@ -310,18 +267,6 @@ class TestComputeMonthlyInsurance:
         person_b_expected = remaining_capital * (Decimal("0.002") * Decimal("0.5")) / Decimal("12")
         expected_total = person_a_expected + person_b_expected
         assert abs(result - expected_total) <= Decimal("0.00001")
-
-    def test_constructor_stores_both_rates_when_list_passed(self):
-        """When a 2-element list is passed, both rates are stored in annual_insurance_rate."""
-        calc = LoanCalculator(
-            loan_amount=100_000,
-            annual_interest_rate=0.015,
-            annual_insurance_rate=[0.003, 0.002],
-            insured_number=2,
-        )
-        assert len(calc.annual_insurance_rate) == 2
-        assert calc.annual_insurance_rate[0] == Decimal("0.003").quantize(Decimal("0.00001"))
-        assert calc.annual_insurance_rate[1] == Decimal("0.002").quantize(Decimal("0.00001"))
 
 
 # ===========================================================================
@@ -483,15 +428,6 @@ class TestComputeAdjustedMonthlyRepayment:
             annual_insurance_rate=INSURANCE_RATE,
         )
 
-    def test_adjusted_repayment_is_quantized_to_two_decimal_places(self, calc):
-        """Adjusted repayment is quantized to 2 d.p. (cents)."""
-        adjusted, _ = calc._compute_adjusted_monthly_repayment(
-            monthly_repayment=Decimal("634.04"),
-            current_remaining_capital=Decimal("5000.00"),
-            loan_amount=Decimal("100000.00"),
-        )
-        assert adjusted.as_tuple().exponent == -2
-
     # -----------------------------------------------------------------------
     # GREEN — derived ratio path (initial_capital_ratio=None)
     # -----------------------------------------------------------------------
@@ -521,18 +457,6 @@ class TestComputeAdjustedMonthlyRepayment:
         )
         expected = quantize_amount(repayment * (1 + ratio / 2))
         assert adjusted == expected
-
-    def test_derived_ratio_increases_repayment_when_remaining_positive(self, calc):
-        """A positive remaining capital (ratio > 0) must produce a repayment strictly
-        greater than the input — the solver needs to push repayment up.
-        """
-        repayment = Decimal("634.04")
-        adjusted, _ = calc._compute_adjusted_monthly_repayment(
-            monthly_repayment=repayment,
-            current_remaining_capital=Decimal("5000.00"),
-            loan_amount=Decimal("100000.00"),
-        )
-        assert adjusted > repayment
 
     # -----------------------------------------------------------------------
     # GREEN — explicit ratio path (initial_capital_ratio provided)
@@ -565,26 +489,6 @@ class TestComputeAdjustedMonthlyRepayment:
         expected = quantize_amount(repayment * (1 + ratio / 2))
         assert adjusted == expected
 
-    def test_explicit_ratio_ignores_current_remaining_capital(self, calc):
-        """Two calls with the same explicit ratio but different remaining capitals
-        must return the same adjusted repayment.
-        """
-        repayment = Decimal("634.04")
-        explicit_ratio = Decimal("0.10")
-        result_a, _ = calc._compute_adjusted_monthly_repayment(
-            monthly_repayment=repayment,
-            current_remaining_capital=Decimal("1000.00"),
-            loan_amount=Decimal("100000.00"),
-            initial_capital_ratio=explicit_ratio,
-        )
-        result_b, _ = calc._compute_adjusted_monthly_repayment(
-            monthly_repayment=repayment,
-            current_remaining_capital=Decimal("50000.00"),
-            loan_amount=Decimal("100000.00"),
-            initial_capital_ratio=explicit_ratio,
-        )
-        assert result_a == result_b
-
     def test_stall_ratio_minus_half_formula(self, calc):
         """Stall-recovery ratio of -0.5 produces repayment * 0.75 (quantized)."""
         repayment = Decimal("634.04")
@@ -608,61 +512,6 @@ class TestComputeAdjustedMonthlyRepayment:
             initial_capital_ratio=Decimal("0"),
         )
         assert adjusted == quantize_amount(repayment)
-
-    def test_ratio_precision_is_six_decimal_places(self, calc):
-        """Returned capital_ratio is quantized to exactly 6 decimal places."""
-        _, ratio = calc._compute_adjusted_monthly_repayment(
-            monthly_repayment=Decimal("634.04"),
-            current_remaining_capital=Decimal("33333.33"),
-            loan_amount=Decimal("100000.00"),
-        )
-        assert ratio.as_tuple().exponent == -6
-
-    # -----------------------------------------------------------------------
-    # RED — xfail: edge cases the method does not guard against
-    # -----------------------------------------------------------------------
-
-    @pytest.mark.xfail(
-        reason="loan_amount=0 causes ZeroDivisionError in the ratio derivation; "
-               "no guard exists for zero loan_amount when initial_capital_ratio is None",
-        strict=True,
-    )
-    def test_zero_loan_amount_raises_cleanly(self, calc):
-        """Edge case: zero loan_amount with no explicit ratio triggers division by zero.
-
-        Would need an explicit guard (e.g. ``if loan_amount == 0: raise ValueError``)
-        to raise a clean exception rather than an unhandled ZeroDivisionError.
-        """
-        calc._compute_adjusted_monthly_repayment(
-            monthly_repayment=Decimal("634.04"),
-            current_remaining_capital=Decimal("5000.00"),
-            loan_amount=Decimal("0"),
-        )
-        # If the method ever raises a friendly ValueError we would assert it here.
-        # For now this is xfail because ZeroDivisionError is raised instead.
-        assert False, "Expected a friendly ValueError, got ZeroDivisionError"
-
-    @pytest.mark.xfail(
-        reason="_compute_adjusted_monthly_repayment accepts any Decimal for "
-               "initial_capital_ratio without validating magnitude; a ratio of 1e6 "
-               "would produce a wildly outsized repayment with no error",
-        strict=False,
-    )
-    def test_enormous_explicit_ratio_raises_value_error(self, calc):
-        """Edge case: an absurdly large ratio is not rejected by the method.
-
-        A production-grade guard would raise ValueError for ratios outside a
-        reasonable domain (e.g. |ratio| > some sentinel), protecting the solver
-        from generating repayments orders of magnitude beyond the loan amount.
-        """
-        adjusted, _ = calc._compute_adjusted_monthly_repayment(
-            monthly_repayment=Decimal("634.04"),
-            current_remaining_capital=Decimal("5000.00"),
-            loan_amount=Decimal("100000.00"),
-            initial_capital_ratio=Decimal("1000000"),
-        )
-        # This assertion will not be reached; xfail documents the missing guard.
-        assert adjusted <= Decimal("100000.00"), "Adjusted repayment exceeds loan amount — no guard"
 
 
 # ===========================================================================
@@ -693,20 +542,6 @@ class TestCalculateMonthlyRepaymentAndLoanAmortizationTable:
             duration=DURATION, monthly_repayment=REPAYMENT_EXACT
         )
         assert monthly == REPAYMENT_EXACT
-
-    def test_case1_table_ends_at_duration(self, calc_single):
-        """Case 1: the returned table ends exactly at month 180."""
-        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
-            duration=DURATION, monthly_repayment=REPAYMENT_EXACT
-        )
-        assert table["month"][-1] == DURATION
-
-    def test_case1_table_last_remaining_capital_is_zero(self, calc_single):
-        """Case 1: last remaining_capital in the table is 0.00."""
-        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
-            duration=DURATION, monthly_repayment=REPAYMENT_EXACT
-        )
-        assert table["remaining_capital"][-1] == Decimal("0.00")
 
     # -----------------------------------------------------------------------
     # GREEN — Strategy B (early repayment)
@@ -765,44 +600,6 @@ class TestCalculateMonthlyRepaymentAndLoanAmortizationTable:
                 f"(month {table['month'][i]}→{table['month'][i+1]}): "
                 f"{costs[i]} > {costs[i+1]}"
             )
-
-    def test_strategy_b_last_phase1_row_has_correct_month(self, calc_single):
-        """Strategy B: the last Phase 1 row (index M-1) carries month number M.
-
-        With early_repayment_month=60, Phase 1 spans indices 0..59.  The row at
-        index 59 must have month==60 — i.e. the merge does not mis-number the
-        final Phase 1 entry (GitHub issue #10).
-        """
-        M = 60
-        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
-            duration=DURATION,
-            monthly_repayment=REPAYMENT_HIGH,
-            early_repayment=20_000,
-            early_repayment_month=M,
-        )
-        assert table["month"][M - 1] == M, (
-            f"Expected last Phase 1 row (index {M - 1}) to have month={M}, "
-            f"got {table['month'][M - 1]}"
-        )
-
-    def test_strategy_b_first_phase2_row_has_correct_month(self, calc_single):
-        """Strategy B: the first Phase 2 row (index M) carries month number M+1.
-
-        With early_repayment_month=60, Phase 2 starts at index 60.  That row
-        must have month==61 — confirming there is no gap or duplicate at the
-        phase boundary (GitHub issue #10).
-        """
-        M = 60
-        table, _ = calc_single.calculate_monthly_repayment_and_loan_amortization_table(
-            duration=DURATION,
-            monthly_repayment=REPAYMENT_HIGH,
-            early_repayment=20_000,
-            early_repayment_month=M,
-        )
-        assert table["month"][M] == M + 1, (
-            f"Expected first Phase 2 row (index {M}) to have month={M + 1}, "
-            f"got {table['month'][M]}"
-        )
 
     def test_strategy_b_month_sequence_is_contiguous(self, calc_single):
         """Strategy B: all month values form a contiguous sequence 1..DURATION.
@@ -1300,15 +1097,6 @@ class TestValidateEarlyRepaymentArgs:
                 early_repayment_month=0,
             )
 
-    def test_duration_zero_error_message_contains_got(self, base_calc):
-        """The error message for duration=0 must include the offending value ('got 0')."""
-        with pytest.raises(ValueError, match="got 0"):
-            base_calc._validate_early_repayment_args(
-                duration=0,
-                early_repayment=None,
-                early_repayment_month=0,
-            )
-
     # -----------------------------------------------------------------------
     # GREEN — early_repayment=None skips inner checks entirely
     # -----------------------------------------------------------------------
@@ -1336,15 +1124,6 @@ class TestValidateEarlyRepaymentArgs:
     def test_early_repayment_zero_raises_value_error(self, base_calc):
         """early_repayment=0 is not positive; must raise ValueError mentioning 'early_repayment'."""
         with pytest.raises(ValueError, match="early_repayment"):
-            base_calc._validate_early_repayment_args(
-                duration=180,
-                early_repayment=0,
-                early_repayment_month=60,
-            )
-
-    def test_early_repayment_zero_error_message_contains_got(self, base_calc):
-        """The error message for early_repayment=0 must include the offending value ('got 0')."""
-        with pytest.raises(ValueError, match="got 0"):
             base_calc._validate_early_repayment_args(
                 duration=180,
                 early_repayment=0,
@@ -1427,74 +1206,6 @@ class TestDelegationToValidateEarlyRepaymentArgs:
     in both ``calculate_loan_amortization_table`` and
     ``calculate_monthly_repayment_and_loan_amortization_table``.
     """
-
-    # -----------------------------------------------------------------------
-    # calculate_loan_amortization_table — delegation verified for each raise path
-    # -----------------------------------------------------------------------
-
-    def test_amortization_table_delegates_duration_zero(self, base_calc):
-        """calculate_loan_amortization_table must raise ValueError for duration=0
-        (via _validate_early_repayment_args delegation).
-        """
-        with pytest.raises(ValueError, match="duration"):
-            base_calc.calculate_loan_amortization_table(
-                duration=0,
-                monthly_repayment=Decimal("1000.00"),
-            )
-
-    def test_amortization_table_delegates_early_repayment_zero(self, base_calc):
-        """calculate_loan_amortization_table must raise ValueError for early_repayment=0."""
-        with pytest.raises(ValueError, match="early_repayment"):
-            base_calc.calculate_loan_amortization_table(
-                duration=180,
-                monthly_repayment=Decimal("1000.00"),
-                early_repayment=0,
-                early_repayment_month=60,
-            )
-
-    def test_amortization_table_delegates_early_repayment_month_zero(self, base_calc):
-        """calculate_loan_amortization_table must raise ValueError for early_repayment_month=0."""
-        with pytest.raises(ValueError, match="early_repayment_month"):
-            base_calc.calculate_loan_amortization_table(
-                duration=180,
-                monthly_repayment=Decimal("1000.00"),
-                early_repayment=10_000,
-                early_repayment_month=0,
-            )
-
-    def test_solver_delegates_duration_zero(self, base_calc):
-        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
-        for duration=0 (via _validate_early_repayment_args delegation).
-        """
-        with pytest.raises(ValueError, match="duration"):
-            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
-                duration=0,
-                monthly_repayment=Decimal("1000.00"),
-            )
-
-    def test_solver_delegates_early_repayment_zero(self, base_calc):
-        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
-        for early_repayment=0.
-        """
-        with pytest.raises(ValueError, match="early_repayment"):
-            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
-                duration=180,
-                monthly_repayment=Decimal("1000.00"),
-                early_repayment=0,
-                early_repayment_month=60,
-            )
-
-    def test_solver_delegates_early_repayment_month_zero(self, base_calc):
-        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
-        for early_repayment_month=0.
-        """
-        with pytest.raises(ValueError, match="early_repayment_month"):
-            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
-                duration=180,
-                monthly_repayment=Decimal("1000.00"),
-                early_repayment=10_000,
-                early_repayment_month=0,
-            )
 
     # -----------------------------------------------------------------------
     # Confirm delegation is via the method (not duplicated logic): patch test

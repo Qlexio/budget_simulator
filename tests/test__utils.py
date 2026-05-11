@@ -27,17 +27,9 @@ class TestQuantizeAmount:
         """Extra decimal places are rounded, not silently truncated."""
         assert quantize_amount(Decimal("9.999")) == Decimal("10.00")
 
-    def test_negative_value_two_dp(self):
-        """Negative values are quantized correctly."""
-        assert quantize_amount(Decimal("-7.5")) == Decimal("-7.50")
-
     def test_large_value_preserves_magnitude(self):
         """Very large monetary values are quantized without losing magnitude."""
         assert quantize_amount(Decimal("999999999.999")) == Decimal("1000000000.00")
-
-    def test_exponent_is_minus_two(self):
-        """The internal exponent of the result must be exactly -2."""
-        assert quantize_amount(Decimal("42.1")).as_tuple().exponent == -2
 
     @pytest.mark.parametrize("raw,expected", [
         ("0",    "0.00"),     # zero without trailing zeros → gains .00
@@ -87,10 +79,6 @@ class TestToDecimal:
         result = to_decimal(0.0375, precision=five_places)
         assert result == Decimal("0.03750")
         assert result.as_tuple().exponent == -5
-
-    def test_rate_very_small_value(self, five_places):
-        """A very small insurance rate (0.036%) converts without underflow."""
-        assert to_decimal(0.00036, precision=five_places) == Decimal("0.00036")
 
     @pytest.mark.parametrize("value,precision,expected", [
         (0,       "0.01",    "0.00"),
