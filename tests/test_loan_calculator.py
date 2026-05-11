@@ -2028,3 +2028,525 @@ class TestSolverOscillationAndConvergence:
                             duration=180,
                             monthly_repayment=Decimal("1000.00"),
                         )
+
+
+# ===========================================================================
+# _validate_early_repayment_args — direct unit tests
+# ===========================================================================
+
+@pytest.fixture
+def base_calc() -> LoanCalculator:
+    """Standard LoanCalculator used as the target for _validate_early_repayment_args calls."""
+    return LoanCalculator(
+        loan_amount=200_000,
+        annual_interest_rate=0.015,
+        annual_insurance_rate=0.002,
+    )
+
+
+class TestValidateEarlyRepaymentArgs:
+    """Direct tests for LoanCalculator._validate_early_repayment_args.
+
+    This private method is the single source of truth for all early-repayment
+    argument validation.  The tests below cover every raise path and every
+    happy path (returns None).  Regression tests confirming delegation from the
+    two public methods appear in TestDelegationToValidateEarlyRepaymentArgs.
+    """
+
+    # -----------------------------------------------------------------------
+    # GREEN — duration guard: duration >= 1
+    # -----------------------------------------------------------------------
+
+    def test_duration_one_no_early_repayment_does_not_raise(self, base_calc):
+        """duration=1 with no early_repayment is the minimum valid call; must return None."""
+        result = base_calc._validate_early_repayment_args(
+            duration=1,
+            early_repayment=None,
+            early_repayment_month=0,
+        )
+        assert result is None
+
+    def test_duration_large_no_early_repayment_does_not_raise(self, base_calc):
+        """duration=360 (30 years) with no early_repayment is valid; must return None."""
+        result = base_calc._validate_early_repayment_args(
+            duration=360,
+            early_repayment=None,
+            early_repayment_month=0,
+        )
+        assert result is None
+
+    # -----------------------------------------------------------------------
+    # RED — duration guard: duration < 1 raises ValueError
+    # -----------------------------------------------------------------------
+
+    def test_duration_zero_raises_value_error(self, base_calc):
+        """duration=0 is below the minimum of 1; must raise ValueError mentioning 'duration'."""
+        with pytest.raises(ValueError, match="duration"):
+            base_calc._validate_early_repayment_args(
+                duration=0,
+                early_repayment=None,
+                early_repayment_month=0,
+            )
+
+    def test_duration_negative_raises_value_error(self, base_calc):
+        """duration=-1 is negative; must raise ValueError mentioning 'duration'."""
+        with pytest.raises(ValueError, match="duration"):
+            base_calc._validate_early_repayment_args(
+                duration=-1,
+                early_repayment=None,
+                early_repayment_month=0,
+            )
+
+    def test_duration_minus_large_raises_value_error(self, base_calc):
+        """duration=-360 is a large negative value; must raise ValueError mentioning 'duration'."""
+        with pytest.raises(ValueError, match="duration"):
+            base_calc._validate_early_repayment_args(
+                duration=-360,
+                early_repayment=None,
+                early_repayment_month=0,
+            )
+
+    def test_duration_zero_error_message_contains_got(self, base_calc):
+        """The error message for duration=0 must include the offending value ('got 0')."""
+        with pytest.raises(ValueError, match="got 0"):
+            base_calc._validate_early_repayment_args(
+                duration=0,
+                early_repayment=None,
+                early_repayment_month=0,
+            )
+
+    # -----------------------------------------------------------------------
+    # GREEN — early_repayment=None skips inner checks entirely
+    # -----------------------------------------------------------------------
+
+    def test_early_repayment_none_with_month_zero_does_not_raise(self, base_calc):
+        """early_repayment=None bypasses the amount and month checks; must return None
+        even when early_repayment_month=0 (which would otherwise be invalid).
+        """
+        result = base_calc._validate_early_repayment_args(
+            duration=180,
+            early_repayment=None,
+            early_repayment_month=0,
+        )
+        assert result is None
+
+    def test_early_repayment_none_with_month_above_duration_does_not_raise(self, base_calc):
+        """early_repayment=None bypasses month bounds check; must return None
+        even when early_repayment_month >= duration.
+        """
+        result = base_calc._validate_early_repayment_args(
+            duration=180,
+            early_repayment=None,
+            early_repayment_month=200,
+        )
+        assert result is None
+
+    # -----------------------------------------------------------------------
+    # GREEN — early_repayment provided with valid amount and month
+    # -----------------------------------------------------------------------
+
+    def test_valid_early_repayment_minimum_month_does_not_raise(self, base_calc):
+        """early_repayment=1000 with early_repayment_month=1 and duration=180
+        is at the lower boundary of the valid month range (1 <= 1 < 180); must return None.
+        """
+        result = base_calc._validate_early_repayment_args(
+            duration=180,
+            early_repayment=1000,
+            early_repayment_month=1,
+        )
+        assert result is None
+
+    def test_valid_early_repayment_maximum_month_does_not_raise(self, base_calc):
+        """early_repayment=1000 with early_repayment_month=duration-1 is at the upper
+        boundary of the valid month range (1 <= 179 < 180); must return None.
+        """
+        result = base_calc._validate_early_repayment_args(
+            duration=180,
+            early_repayment=1000,
+            early_repayment_month=179,
+        )
+        assert result is None
+
+    def test_valid_early_repayment_mid_month_does_not_raise(self, base_calc):
+        """early_repayment=20_000 at month 60 within duration=180 is valid; must return None."""
+        result = base_calc._validate_early_repayment_args(
+            duration=180,
+            early_repayment=20_000,
+            early_repayment_month=60,
+        )
+        assert result is None
+
+    def test_valid_early_repayment_float_amount_does_not_raise(self, base_calc):
+        """A float early_repayment value (e.g. 9999.99) is accepted; must return None."""
+        result = base_calc._validate_early_repayment_args(
+            duration=180,
+            early_repayment=9999.99,
+            early_repayment_month=60,
+        )
+        assert result is None
+
+    def test_valid_early_repayment_returns_none(self, base_calc):
+        """The method must explicitly return None (not implicitly fall through)
+        when all arguments are valid.
+        """
+        result = base_calc._validate_early_repayment_args(
+            duration=180,
+            early_repayment=5000,
+            early_repayment_month=90,
+        )
+        assert result is None
+
+    # -----------------------------------------------------------------------
+    # RED — early_repayment <= 0 raises ValueError
+    # -----------------------------------------------------------------------
+
+    def test_early_repayment_zero_raises_value_error(self, base_calc):
+        """early_repayment=0 is not positive; must raise ValueError mentioning 'early_repayment'."""
+        with pytest.raises(ValueError, match="early_repayment"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=0,
+                early_repayment_month=60,
+            )
+
+    def test_early_repayment_negative_int_raises_value_error(self, base_calc):
+        """early_repayment=-1000 is negative; must raise ValueError mentioning 'early_repayment'."""
+        with pytest.raises(ValueError, match="early_repayment"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=-1000,
+                early_repayment_month=60,
+            )
+
+    def test_early_repayment_negative_float_raises_value_error(self, base_calc):
+        """early_repayment=-0.01 (negative float) must raise ValueError mentioning 'early_repayment'."""
+        with pytest.raises(ValueError, match="early_repayment"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=-0.01,
+                early_repayment_month=60,
+            )
+
+    def test_early_repayment_zero_error_message_contains_got(self, base_calc):
+        """The error message for early_repayment=0 must include the offending value ('got 0')."""
+        with pytest.raises(ValueError, match="got 0"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=0,
+                early_repayment_month=60,
+            )
+
+    # -----------------------------------------------------------------------
+    # RED — early_repayment_month out of [1, duration-1] range raises ValueError
+    # -----------------------------------------------------------------------
+
+    def test_early_repayment_month_zero_raises_value_error(self, base_calc):
+        """early_repayment_month=0 is below the minimum of 1; must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=10_000,
+                early_repayment_month=0,
+            )
+
+    def test_early_repayment_month_negative_raises_value_error(self, base_calc):
+        """early_repayment_month=-1 is negative; must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=10_000,
+                early_repayment_month=-1,
+            )
+
+    def test_early_repayment_month_equals_duration_raises_value_error(self, base_calc):
+        """early_repayment_month=duration violates the strict upper bound (must be < duration);
+        must raise ValueError.
+        """
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=10_000,
+                early_repayment_month=180,
+            )
+
+    def test_early_repayment_month_above_duration_raises_value_error(self, base_calc):
+        """early_repayment_month=duration+1 exceeds the valid range; must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=10_000,
+                early_repayment_month=181,
+            )
+
+    def test_early_repayment_month_error_message_contains_upper_bound(self, base_calc):
+        """The error message for an out-of-range month must mention the valid upper bound
+        (duration-1), so the caller knows the accepted range.
+        """
+        with pytest.raises(ValueError, match="179"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=10_000,
+                early_repayment_month=180,
+            )
+
+    # -----------------------------------------------------------------------
+    # RED — duration < 1 is checked before early_repayment checks
+    # -----------------------------------------------------------------------
+
+    def test_duration_zero_takes_priority_over_invalid_early_repayment(self, base_calc):
+        """When both duration=0 and early_repayment=0 are invalid, the duration
+        guard fires first (it is checked unconditionally before the early_repayment block).
+        """
+        with pytest.raises(ValueError, match="duration"):
+            base_calc._validate_early_repayment_args(
+                duration=0,
+                early_repayment=0,
+                early_repayment_month=60,
+            )
+
+    # -----------------------------------------------------------------------
+    # GREEN — parametrize valid (duration, early_repayment, month) triples
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("duration,amount,month", [
+        (2,   1,        1),       # minimum duration with minimum valid month
+        (360, 50_000,   1),       # 30-year loan, first month
+        (360, 50_000,   359),     # 30-year loan, last valid month
+        (12,  5_000,    6),       # 1-year loan, mid-point
+        (180, 0.01,     90),      # smallest positive float amount
+    ])
+    def test_valid_combinations_do_not_raise(self, base_calc, duration, amount, month):
+        """A selection of valid (duration, early_repayment, month) triples must all
+        return None without raising.
+        """
+        result = base_calc._validate_early_repayment_args(
+            duration=duration,
+            early_repayment=amount,
+            early_repayment_month=month,
+        )
+        assert result is None
+
+    # -----------------------------------------------------------------------
+    # RED — parametrize invalid month boundaries
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("month", [0, -1, -100, 180, 181, 999])
+    def test_invalid_month_values_all_raise_value_error(self, base_calc, month):
+        """All month values outside [1, duration-1] must raise ValueError."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc._validate_early_repayment_args(
+                duration=180,
+                early_repayment=10_000,
+                early_repayment_month=month,
+            )
+
+
+# ===========================================================================
+# Regression: delegation from both public methods to _validate_early_repayment_args
+# ===========================================================================
+
+class TestDelegationToValidateEarlyRepaymentArgs:
+    """Regression tests confirming that both public methods delegate argument
+    validation to _validate_early_repayment_args.
+
+    Each test verifies that a specific invalid combination raises ValueError
+    (or is accepted) via the public API, proving the delegation is wired up
+    in both ``calculate_loan_amortization_table`` and
+    ``calculate_monthly_repayment_and_loan_amortization_table``.
+    """
+
+    # -----------------------------------------------------------------------
+    # calculate_loan_amortization_table — delegation verified for each raise path
+    # -----------------------------------------------------------------------
+
+    def test_amortization_table_delegates_duration_zero(self, base_calc):
+        """calculate_loan_amortization_table must raise ValueError for duration=0
+        (via _validate_early_repayment_args delegation).
+        """
+        with pytest.raises(ValueError, match="duration"):
+            base_calc.calculate_loan_amortization_table(
+                duration=0,
+                monthly_repayment=Decimal("1000.00"),
+            )
+
+    def test_amortization_table_delegates_duration_negative(self, base_calc):
+        """calculate_loan_amortization_table must raise ValueError for duration=-5."""
+        with pytest.raises(ValueError, match="duration"):
+            base_calc.calculate_loan_amortization_table(
+                duration=-5,
+                monthly_repayment=Decimal("1000.00"),
+            )
+
+    def test_amortization_table_delegates_early_repayment_zero(self, base_calc):
+        """calculate_loan_amortization_table must raise ValueError for early_repayment=0."""
+        with pytest.raises(ValueError, match="early_repayment"):
+            base_calc.calculate_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=0,
+                early_repayment_month=60,
+            )
+
+    def test_amortization_table_delegates_early_repayment_negative(self, base_calc):
+        """calculate_loan_amortization_table must raise ValueError for early_repayment=-500."""
+        with pytest.raises(ValueError, match="early_repayment"):
+            base_calc.calculate_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=-500,
+                early_repayment_month=60,
+            )
+
+    def test_amortization_table_delegates_early_repayment_month_zero(self, base_calc):
+        """calculate_loan_amortization_table must raise ValueError for early_repayment_month=0."""
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc.calculate_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=10_000,
+                early_repayment_month=0,
+            )
+
+    def test_amortization_table_delegates_early_repayment_month_equals_duration(self, base_calc):
+        """calculate_loan_amortization_table must raise ValueError for
+        early_repayment_month=duration (strict upper-bound violation).
+        """
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc.calculate_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=10_000,
+                early_repayment_month=180,
+            )
+
+    def test_amortization_table_delegates_early_repayment_month_above_duration(self, base_calc):
+        """calculate_loan_amortization_table must raise ValueError for
+        early_repayment_month > duration.
+        """
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc.calculate_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=10_000,
+                early_repayment_month=200,
+            )
+
+    # -----------------------------------------------------------------------
+    # calculate_monthly_repayment_and_loan_amortization_table — delegation verified
+    # -----------------------------------------------------------------------
+
+    def test_solver_delegates_duration_zero(self, base_calc):
+        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
+        for duration=0 (via _validate_early_repayment_args delegation).
+        """
+        with pytest.raises(ValueError, match="duration"):
+            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=0,
+                monthly_repayment=Decimal("1000.00"),
+            )
+
+    def test_solver_delegates_duration_negative(self, base_calc):
+        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
+        for duration=-1.
+        """
+        with pytest.raises(ValueError, match="duration"):
+            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=-1,
+                monthly_repayment=Decimal("1000.00"),
+            )
+
+    def test_solver_delegates_early_repayment_zero(self, base_calc):
+        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
+        for early_repayment=0.
+        """
+        with pytest.raises(ValueError, match="early_repayment"):
+            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=0,
+                early_repayment_month=60,
+            )
+
+    def test_solver_delegates_early_repayment_negative(self, base_calc):
+        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
+        for early_repayment=-1.
+        """
+        with pytest.raises(ValueError, match="early_repayment"):
+            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=-1,
+                early_repayment_month=60,
+            )
+
+    def test_solver_delegates_early_repayment_month_zero(self, base_calc):
+        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
+        for early_repayment_month=0.
+        """
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=10_000,
+                early_repayment_month=0,
+            )
+
+    def test_solver_delegates_early_repayment_month_equals_duration(self, base_calc):
+        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
+        for early_repayment_month=duration (strict upper-bound violation).
+        """
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=10_000,
+                early_repayment_month=180,
+            )
+
+    def test_solver_delegates_early_repayment_month_above_duration(self, base_calc):
+        """calculate_monthly_repayment_and_loan_amortization_table must raise ValueError
+        for early_repayment_month > duration.
+        """
+        with pytest.raises(ValueError, match="early_repayment_month"):
+            base_calc.calculate_monthly_repayment_and_loan_amortization_table(
+                duration=180,
+                monthly_repayment=Decimal("1000.00"),
+                early_repayment=10_000,
+                early_repayment_month=200,
+            )
+
+    # -----------------------------------------------------------------------
+    # Confirm delegation is via the method (not duplicated logic): patch test
+    # -----------------------------------------------------------------------
+
+    def test_amortization_table_calls_validate_method(self, base_calc):
+        """calculate_loan_amortization_table must call _validate_early_repayment_args
+        before doing any computation.  Patch the private method to raise and confirm
+        the public method propagates the error unchanged.
+        """
+        with patch.object(
+            base_calc,
+            "_validate_early_repayment_args",
+            side_effect=ValueError("sentinel validation error"),
+        ):
+            with pytest.raises(ValueError, match="sentinel validation error"):
+                base_calc.calculate_loan_amortization_table(
+                    duration=180,
+                    monthly_repayment=Decimal("1000.00"),
+                )
+
+    def test_solver_calls_validate_method(self, base_calc):
+        """calculate_monthly_repayment_and_loan_amortization_table must call
+        _validate_early_repayment_args before doing any computation.  Patch the
+        private method to raise and confirm the public method propagates the error.
+        """
+        with patch.object(
+            base_calc,
+            "_validate_early_repayment_args",
+            side_effect=ValueError("sentinel validation error"),
+        ):
+            with pytest.raises(ValueError, match="sentinel validation error"):
+                base_calc.calculate_monthly_repayment_and_loan_amortization_table(
+                    duration=180,
+                    monthly_repayment=Decimal("1000.00"),
+                )

@@ -124,6 +124,33 @@ class LoanCalculator:
             return [to_decimal(ins_value, precision=precision) for ins_value in decimal_insurance_value[:insured_number]]
         return []
 
+    def _validate_early_repayment_args(
+        self,
+        duration: int,
+        early_repayment: Optional[Union[int, float]],
+        early_repayment_month: int,
+    ) -> None:
+        """Raise ValueError if early-repayment arguments are invalid.
+
+        Args:
+            duration: Loan duration in months (must be >= 1).
+            early_repayment: Optional lump-sum amount (must be positive when provided).
+            early_repayment_month: 1-based month index (must satisfy 1 <= month < duration).
+
+        Raises:
+            ValueError: On any invalid combination of the above arguments.
+        """
+        if duration < 1:
+            raise ValueError(f"duration must be at least 1, got {duration}")
+        if early_repayment is not None:
+            if early_repayment <= 0:
+                raise ValueError(f"early_repayment must be positive, got {early_repayment}")
+            if not (1 <= early_repayment_month < duration):
+                raise ValueError(
+                    f"early_repayment_month must be between 1 and duration-1 ({duration - 1}), "
+                    f"got {early_repayment_month}"
+                )
+
     def _compute_payment_breakdown(
         self,
         monthly_repayment: _Decimal,
@@ -241,16 +268,7 @@ class LoanCalculator:
             ValueError: If ``duration`` < 1, or if ``early_repayment`` is provided
                 with an invalid ``early_repayment_month`` or non-positive amount.
         """
-        if duration < 1:
-            raise ValueError(f"duration must be at least 1, got {duration}")
-        if early_repayment is not None:
-            if early_repayment <= 0:
-                raise ValueError(f"early_repayment must be positive, got {early_repayment}")
-            if not (1 <= early_repayment_month < duration):
-                raise ValueError(
-                    f"early_repayment_month must be between 1 and duration-1 ({duration - 1}), "
-                    f"got {early_repayment_month}"
-                )
+        self._validate_early_repayment_args(duration, early_repayment, early_repayment_month)
 
         effective_capital = initial_capital if initial_capital is not None else self.loan_amount
         month1_interest = quantize_amount(effective_capital * self.annual_interest_rate / 12)
@@ -346,16 +364,7 @@ class LoanCalculator:
             RuntimeError: If the iterative solver fails to converge within
                 ``self._SOLVER_MAX_ITERATIONS`` iterations without oscillating.
         """
-        if duration < 1:
-            raise ValueError(f"duration must be at least 1, got {duration}")
-        if early_repayment is not None:
-            if early_repayment <= 0:
-                raise ValueError(f"early_repayment must be positive, got {early_repayment}")
-            if not (1 <= early_repayment_month < duration):
-                raise ValueError(
-                    f"early_repayment_month must be between 1 and duration-1 ({duration - 1}), "
-                    f"got {early_repayment_month}"
-                )
+        self._validate_early_repayment_args(duration, early_repayment, early_repayment_month)
 
         if early_repayment is not None:
             decimal_early_repayment = to_decimal(early_repayment)
