@@ -1626,6 +1626,285 @@ class TestCalculateLoanAmortizationTable:
 
 
 # ===========================================================================
+# _compute_adjusted_monthly_repayment
+# ===========================================================================
+
+class TestComputeAdjustedMonthlyRepayment:
+    """Tests for LoanCalculator._compute_adjusted_monthly_repayment.
+
+    The method was extracted from the inner function
+    ``calculate_new_monthly_repayment`` that previously lived inside
+    ``calculate_monthly_repayment_and_loan_amortization_table``.
+
+    Contract:
+      - Returns a 2-tuple ``(adjusted_repayment, capital_ratio)``.
+      - ``adjusted_repayment`` = ``quantize_amount(monthly_repayment * (1 + capital_ratio / 2))``.
+      - When ``initial_capital_ratio`` is provided it is used directly as
+        ``capital_ratio``; otherwise ``capital_ratio = current_remaining_capital / loan_amount``.
+      - Both returned values are ``Decimal``; ``adjusted_repayment`` is quantized
+        to 2 d.p. (cents).
+    """
+
+    # -----------------------------------------------------------------------
+    # Fixtures
+    # -----------------------------------------------------------------------
+
+    @pytest.fixture
+    def calc(self) -> LoanCalculator:
+        """Standard single-insured calculator used throughout this class."""
+        return LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+        )
+
+    # -----------------------------------------------------------------------
+    # GREEN — return type and structure
+    # -----------------------------------------------------------------------
+
+    def test_returns_two_tuple(self, calc):
+        """Return value is a 2-tuple."""
+        result = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=Decimal("634.04"),
+            current_remaining_capital=Decimal("5000.00"),
+            loan_amount=Decimal("100000.00"),
+        )
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_first_element_is_decimal(self, calc):
+        """First element (adjusted repayment) is a Decimal instance."""
+        adjusted, _ = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=Decimal("634.04"),
+            current_remaining_capital=Decimal("5000.00"),
+            loan_amount=Decimal("100000.00"),
+        )
+        assert isinstance(adjusted, Decimal)
+
+    def test_second_element_is_decimal(self, calc):
+        """Second element (capital_ratio) is a Decimal instance."""
+        _, ratio = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=Decimal("634.04"),
+            current_remaining_capital=Decimal("5000.00"),
+            loan_amount=Decimal("100000.00"),
+        )
+        assert isinstance(ratio, Decimal)
+
+    def test_adjusted_repayment_is_quantized_to_two_decimal_places(self, calc):
+        """Adjusted repayment is quantized to 2 d.p. (cents)."""
+        adjusted, _ = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=Decimal("634.04"),
+            current_remaining_capital=Decimal("5000.00"),
+            loan_amount=Decimal("100000.00"),
+        )
+        assert adjusted.as_tuple().exponent == -2
+
+    # -----------------------------------------------------------------------
+    # GREEN — derived ratio path (initial_capital_ratio=None)
+    # -----------------------------------------------------------------------
+
+    def test_derived_ratio_equals_remaining_over_loan(self, calc):
+        """When initial_capital_ratio is None, ratio = remaining_capital / loan_amount."""
+        remaining = Decimal("5000.00")
+        loan = Decimal("100000.00")
+        _, ratio = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=Decimal("634.04"),
+            current_remaining_capital=remaining,
+            loan_amount=loan,
+        )
+        # ratio is stored at precision "0.000001"
+        expected_ratio = Decimal(str(float(remaining / loan))).quantize(Decimal("0.000001"))
+        assert ratio == expected_ratio
+
+    def test_derived_ratio_adjusted_repayment_formula(self, calc):
+        """Adjusted repayment = quantize(repayment * (1 + ratio / 2)) when ratio derived."""
+        repayment = Decimal("634.04")
+        remaining = Decimal("5000.00")
+        loan = Decimal("100000.00")
+        adjusted, ratio = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=remaining,
+            loan_amount=loan,
+        )
+        expected = quantize_amount(repayment * (1 + ratio / 2))
+        assert adjusted == expected
+
+    def test_derived_ratio_increases_repayment_when_remaining_positive(self, calc):
+        """A positive remaining capital (ratio > 0) must produce a repayment strictly
+        greater than the input — the solver needs to push repayment up.
+        """
+        repayment = Decimal("634.04")
+        adjusted, _ = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=Decimal("5000.00"),
+            loan_amount=Decimal("100000.00"),
+        )
+        assert adjusted > repayment
+
+    # -----------------------------------------------------------------------
+    # GREEN — explicit ratio path (initial_capital_ratio provided)
+    # -----------------------------------------------------------------------
+
+    def test_explicit_ratio_is_used_directly(self, calc):
+        """When initial_capital_ratio is provided, it is used as-is (not re-derived)."""
+        explicit_ratio = Decimal("0.05")
+        repayment = Decimal("634.04")
+        _, returned_ratio = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=Decimal("99000.00"),  # would give very different ratio
+            loan_amount=Decimal("100000.00"),
+            initial_capital_ratio=explicit_ratio,
+        )
+        # The returned ratio is the explicit one converted through float at "0.000001"
+        expected_ratio = Decimal(str(float(explicit_ratio))).quantize(Decimal("0.000001"))
+        assert returned_ratio == expected_ratio
+
+    def test_explicit_ratio_formula_applied(self, calc):
+        """Adjusted repayment uses the explicit ratio in the formula."""
+        explicit_ratio = Decimal("0.05")
+        repayment = Decimal("634.04")
+        adjusted, ratio = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=Decimal("99000.00"),
+            loan_amount=Decimal("100000.00"),
+            initial_capital_ratio=explicit_ratio,
+        )
+        expected = quantize_amount(repayment * (1 + ratio / 2))
+        assert adjusted == expected
+
+    def test_explicit_ratio_ignores_current_remaining_capital(self, calc):
+        """Two calls with the same explicit ratio but different remaining capitals
+        must return the same adjusted repayment.
+        """
+        repayment = Decimal("634.04")
+        explicit_ratio = Decimal("0.10")
+        result_a, _ = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=Decimal("1000.00"),
+            loan_amount=Decimal("100000.00"),
+            initial_capital_ratio=explicit_ratio,
+        )
+        result_b, _ = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=Decimal("50000.00"),
+            loan_amount=Decimal("100000.00"),
+            initial_capital_ratio=explicit_ratio,
+        )
+        assert result_a == result_b
+
+    # -----------------------------------------------------------------------
+    # GREEN — sign / magnitude of the adjustment
+    # -----------------------------------------------------------------------
+
+    def test_negative_explicit_ratio_decreases_repayment(self, calc):
+        """A negative ratio (stall-recovery injection: -0.5) must produce a repayment
+        strictly less than the input — solver is pushing repayment down.
+        """
+        repayment = Decimal("634.04")
+        adjusted, _ = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=Decimal("0.00"),
+            loan_amount=Decimal("100000.00"),
+            initial_capital_ratio=Decimal("-0.5"),
+        )
+        assert adjusted < repayment
+
+    def test_stall_ratio_minus_half_formula(self, calc):
+        """Stall-recovery ratio of -0.5 produces repayment * 0.75 (quantized)."""
+        repayment = Decimal("634.04")
+        adjusted, ratio = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=Decimal("0.00"),
+            loan_amount=Decimal("100000.00"),
+            initial_capital_ratio=Decimal("-0.5"),
+        )
+        # ratio / 2 = -0.25, so factor = 1 + (-0.25) = 0.75
+        expected = quantize_amount(repayment * (1 + ratio / 2))
+        assert adjusted == expected
+
+    def test_zero_explicit_ratio_returns_repayment_unchanged(self, calc):
+        """A ratio of exactly zero leaves the repayment unchanged (identity case)."""
+        repayment = Decimal("634.04")
+        adjusted, _ = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=Decimal("0.00"),
+            loan_amount=Decimal("100000.00"),
+            initial_capital_ratio=Decimal("0"),
+        )
+        assert adjusted == quantize_amount(repayment)
+
+    def test_large_loan_amount_small_remaining_produces_small_ratio(self, calc):
+        """Tiny remaining capital relative to large loan → ratio near 0, tiny adjustment."""
+        repayment = Decimal("1000.00")
+        remaining = Decimal("1.00")
+        loan = Decimal("1000000.00")
+        adjusted, ratio = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=repayment,
+            current_remaining_capital=remaining,
+            loan_amount=loan,
+        )
+        # ratio = 1 / 1_000_000 → very small, adjustment is negligible
+        assert ratio < Decimal("0.000002")
+        # Adjusted repayment must still be >= input (small positive nudge)
+        assert adjusted >= repayment
+
+    def test_ratio_precision_is_six_decimal_places(self, calc):
+        """Returned capital_ratio is quantized to exactly 6 decimal places."""
+        _, ratio = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=Decimal("634.04"),
+            current_remaining_capital=Decimal("33333.33"),
+            loan_amount=Decimal("100000.00"),
+        )
+        assert ratio.as_tuple().exponent == -6
+
+    # -----------------------------------------------------------------------
+    # RED — xfail: edge cases the method does not guard against
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.xfail(
+        reason="loan_amount=0 causes ZeroDivisionError in the ratio derivation; "
+               "no guard exists for zero loan_amount when initial_capital_ratio is None",
+        strict=True,
+    )
+    def test_zero_loan_amount_raises_cleanly(self, calc):
+        """Edge case: zero loan_amount with no explicit ratio triggers division by zero.
+
+        Would need an explicit guard (e.g. ``if loan_amount == 0: raise ValueError``)
+        to raise a clean exception rather than an unhandled ZeroDivisionError.
+        """
+        calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=Decimal("634.04"),
+            current_remaining_capital=Decimal("5000.00"),
+            loan_amount=Decimal("0"),
+        )
+        # If the method ever raises a friendly ValueError we would assert it here.
+        # For now this is xfail because ZeroDivisionError is raised instead.
+        assert False, "Expected a friendly ValueError, got ZeroDivisionError"
+
+    @pytest.mark.xfail(
+        reason="_compute_adjusted_monthly_repayment accepts any Decimal for "
+               "initial_capital_ratio without validating magnitude; a ratio of 1e6 "
+               "would produce a wildly outsized repayment with no error",
+        strict=False,
+    )
+    def test_enormous_explicit_ratio_raises_value_error(self, calc):
+        """Edge case: an absurdly large ratio is not rejected by the method.
+
+        A production-grade guard would raise ValueError for ratios outside a
+        reasonable domain (e.g. |ratio| > some sentinel), protecting the solver
+        from generating repayments orders of magnitude beyond the loan amount.
+        """
+        adjusted, _ = calc._compute_adjusted_monthly_repayment(
+            monthly_repayment=Decimal("634.04"),
+            current_remaining_capital=Decimal("5000.00"),
+            loan_amount=Decimal("100000.00"),
+            initial_capital_ratio=Decimal("1000000"),
+        )
+        # This assertion will not be reached; xfail documents the missing guard.
+        assert adjusted <= Decimal("100000.00"), "Adjusted repayment exceeds loan amount — no guard"
+
+
+# ===========================================================================
 # calculate_monthly_repayment_and_loan_amortization_table
 # ===========================================================================
 

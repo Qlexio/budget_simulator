@@ -315,6 +315,21 @@ class LoanCalculator:
 
         return loan_amortization_table
 
+    def _compute_adjusted_monthly_repayment(
+        self,
+        monthly_repayment: _Decimal,
+        current_remaining_capital: _Decimal,
+        loan_amount: _Decimal,
+        initial_capital_ratio: Optional[_Decimal] = None,
+    ) -> tuple[_Decimal, _Decimal]:
+        # Use the provided ratio (stall recovery) or derive it from the residual
+        # remaining capital relative to the original loan amount. Dividing by 2
+        # dampens the correction to avoid overshooting.
+        capital_ratio = initial_capital_ratio or current_remaining_capital / loan_amount
+        # to_decimal only accepts int/float; convert via float to handle Decimal input
+        capital_ratio = to_decimal(float(capital_ratio), precision="0.000001")
+        return quantize_amount(monthly_repayment * (1 + (capital_ratio / 2))), capital_ratio
+
     def calculate_monthly_repayment_and_loan_amortization_table(
         self,
         duration: int,
@@ -405,15 +420,6 @@ class LoanCalculator:
             capital_tolerance=capital_tolerance,
         )
 
-        def calculate_new_monthly_repayment(monthly_repayment, current_remaining_capital, loan_amount, initial_capital_ratio=None):
-            # Use the provided ratio (stall recovery) or derive it from the residual
-            # remaining capital relative to the original loan amount. Dividing by 2
-            # dampens the correction to avoid overshooting.
-            capital_ratio = initial_capital_ratio or current_remaining_capital / loan_amount
-            # to_decimal only accepts int/float; convert via float to handle Decimal input
-            capital_ratio = to_decimal(float(capital_ratio), precision="0.000001")
-            return quantize_amount(monthly_repayment * (1 + (capital_ratio / 2))), capital_ratio
-
         # Fast exit: initial estimate already converges without iteration
         if all((loan_amortization_table["remaining_capital"][-1] == 0, loan_amortization_table["remaining_capital"][-2] != 0)):
             return loan_amortization_table, monthly_repayment
@@ -429,7 +435,7 @@ class LoanCalculator:
         last_negative: Optional[tuple[_Decimal, _Decimal]] = None
 
         for _ in range(self._SOLVER_MAX_ITERATIONS):
-            new_monthly_repayment, capital_ratio = calculate_new_monthly_repayment(
+            new_monthly_repayment, capital_ratio = self._compute_adjusted_monthly_repayment(
                 new_monthly_repayment,
                 loan_amortization_table["remaining_capital"][-1],
                 self.loan_amount,
