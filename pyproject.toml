@@ -1,0 +1,26 @@
+[project]
+name = "budget-simulator"
+version = "0.1.0"
+description = "French mortgage analysis: amortization tables and early repayment strategies"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "pytest-cov",
+]
+notebook = [
+    "numpy",
+    "pandas",
+    "jupyterlab",
+]
+
+[tool.setuptools]
+packages = ["budget_simulator"]
+package-dir = {"budget_simulator" = "."}
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
