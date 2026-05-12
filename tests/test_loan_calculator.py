@@ -179,6 +179,33 @@ class TestFormatInsuranceRelatedValues:
                 [0.002, 0.004], insured_number=3, precision="0.00001"
             )
 
+    def test_b3_scalar_override_insured_number_differs_from_self(self):
+        """Fix 1: scalar + override insured_number=2 on a insured_number=1 instance.
+
+        Before Fix 1, _format_insurance_related_values used self.insured_number (1)
+        in the scalar-expansion loop, so the returned list had only 1 element.
+        After the fix, the local parameter is respected and the list has length 2.
+        """
+        calc = LoanCalculator(
+            loan_amount=LOAN_AMOUNT,
+            annual_interest_rate=ANNUAL_RATE,
+            annual_insurance_rate=INSURANCE_RATE,
+            insured_number=1,
+        )
+        result = calc._format_insurance_related_values(0.003, insured_number=2, precision="0.00001")
+        assert len(result) == 2
+        assert result[0] == result[1] == Decimal("0.00300")
+
+    def test_init_negative_monthly_repayment_raises_value_error(self):
+        """Fix 3: monthly_repayment < 0 must raise ValueError mentioning 'monthly_repayment'."""
+        with pytest.raises(ValueError, match="monthly_repayment"):
+            LoanCalculator(
+                loan_amount=LOAN_AMOUNT,
+                annual_interest_rate=ANNUAL_RATE,
+                annual_insurance_rate=INSURANCE_RATE,
+                monthly_repayment=-1,
+            )
+
 
 # ===========================================================================
 # _compute_payment_breakdown
@@ -615,6 +642,31 @@ class TestCalculateMonthlyRepaymentAndLoanAmortizationTable:
             early_repayment_month=60,
         )
         assert table["month"] == list(range(1, DURATION + 1))
+
+    def test_duration_one_solver_converges_without_error(self):
+        """Fix 2: solver with duration=1 must not raise and must return a zero-balance table.
+
+        Before Fix 2, the fast-exit guard read remaining_capital[-2] via a wrap-around
+        index on a length-1 list, hitting the last element again and preventing the
+        guard from firing; the solver then entered the loop and raised RuntimeError.
+
+        The repayment is computed as: principal + interest + insurance
+            = 100 000 + (100 000 × 0.015 / 12) + (100 000 × 0.003 / 12)
+            = 100 000 + 125.00 + 25.00
+            = 100 150.00
+        This is the exact amount that leaves zero remaining capital after a single month.
+        """
+        calc = LoanCalculator(
+            loan_amount=100_000,
+            annual_interest_rate=0.015,
+            annual_insurance_rate=0.003,
+        )
+        table, _ = calc.calculate_monthly_repayment_and_loan_amortization_table(
+            duration=1,
+            monthly_repayment=Decimal("100150.00"),
+        )
+        assert len(table["month"]) == 1
+        assert table["remaining_capital"][0] == Decimal("0.00")
 
     def test_strategy_b_phase1_rows_match_no_early_repayment_baseline(self, calc_single):
         """Strategy B: the first 60 rows of the merged table are identical to a plain

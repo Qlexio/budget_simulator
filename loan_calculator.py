@@ -50,6 +50,8 @@ class LoanCalculator:
             raise ValueError(f"annual_interest_rate must be non-negative, got {annual_interest_rate}")
         if not isinstance(insured_number, int) or insured_number < 1:
             raise ValueError(f"insured_number must be a positive integer, got {insured_number}")
+        if monthly_repayment < 0:
+            raise ValueError(f"monthly_repayment must be non-negative, got {monthly_repayment}")
 
         self.loan_amount = to_decimal(loan_amount)
         self.annual_interest_rate = to_decimal(annual_interest_rate, precision="0.00001")
@@ -103,7 +105,7 @@ class LoanCalculator:
             return [to_decimal(decimal_insurance_value[0], precision=precision)]
         if insured_number > 1 and not isinstance(decimal_insurance_value, list):
             ret_insurance_value = []
-            for i in range(self.insured_number):
+            for i in range(insured_number):
                 ret_insurance_value.append(decimal_insurance_value)
             return ret_insurance_value
         if insured_number > 1 and isinstance(decimal_insurance_value, list):
@@ -271,15 +273,19 @@ class LoanCalculator:
         self._validate_early_repayment_args(duration, early_repayment, early_repayment_month)
 
         effective_capital = initial_capital if initial_capital is not None else self.loan_amount
-        month1_interest = quantize_amount(effective_capital * self.annual_interest_rate / 12)
         month1_insurance = quantize_amount(self._compute_monthly_insurance(remaining_capital=effective_capital))
-        month1_refunded = quantize_amount(monthly_repayment - month1_interest - month1_insurance)
+        month1_interest, month1_refunded, month1_remaining = self._compute_payment_breakdown(
+            monthly_repayment=monthly_repayment,
+            monthly_insurance=month1_insurance,
+            remaining_capital=effective_capital,
+            capital_tolerance=capital_tolerance,
+        )
         loan_amortization_table = {
             "month": [1],
-            "interest": [month1_interest],
+            "interest": [quantize_amount(month1_interest)],
             "insurance": [month1_insurance],
-            "refunded_capital": [month1_refunded],
-            "remaining_capital": [quantize_amount(effective_capital - month1_refunded)],
+            "refunded_capital": [quantize_amount(month1_refunded)],
+            "remaining_capital": [quantize_amount(month1_remaining)],
             "cumulated_costs": [quantize_amount(month1_interest + month1_insurance)],
         }
 
@@ -325,7 +331,7 @@ class LoanCalculator:
         # Use the provided ratio (stall recovery) or derive it from the residual
         # remaining capital relative to the original loan amount. Dividing by 2
         # dampens the correction to avoid overshooting.
-        capital_ratio = initial_capital_ratio or current_remaining_capital / loan_amount
+        capital_ratio = current_remaining_capital / loan_amount if initial_capital_ratio is None else initial_capital_ratio
         # to_decimal only accepts int/float; convert via float to handle Decimal input
         capital_ratio = to_decimal(float(capital_ratio), precision="0.000001")
         return quantize_amount(monthly_repayment * (1 + (capital_ratio / 2))), capital_ratio
@@ -421,7 +427,12 @@ class LoanCalculator:
         )
 
         # Fast exit: initial estimate already converges without iteration
-        if all((loan_amortization_table["remaining_capital"][-1] == 0, loan_amortization_table["remaining_capital"][-2] != 0)):
+        _rc = loan_amortization_table["remaining_capital"]
+        if (
+            _rc[-1] == 0
+            and (len(_rc) < 2 or _rc[-2] != 0)
+            and loan_amortization_table["month"][-1] == duration
+        ):
             return loan_amortization_table, monthly_repayment
 
         new_monthly_repayment = monthly_repayment
@@ -449,9 +460,10 @@ class LoanCalculator:
             current_remaining = loan_amortization_table["remaining_capital"][-1]
 
             # Case 1: solver converged — table ends exactly at duration
+            _rc = loan_amortization_table["remaining_capital"]
             if all((
                 current_remaining == 0,
-                loan_amortization_table["remaining_capital"][-2] != 0,
+                len(_rc) < 2 or _rc[-2] != 0,
                 loan_amortization_table["month"][-1] == duration,
             )):
                 return loan_amortization_table, new_monthly_repayment
